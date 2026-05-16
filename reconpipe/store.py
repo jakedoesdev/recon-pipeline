@@ -59,8 +59,18 @@ def load_store(path: Path) -> dict[str, Host]:
     hosts: dict[str, Host] = {}
     if not path.exists():
         return hosts
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return hosts
+
+    # Detect JSON array vs JSONL
+    if content.startswith("["):
+        records = json.loads(content)
+        for raw in records:
+            host = _rebuild_host(raw)
+            hosts[host.fqdn] = host
+    else:
+        for line in content.splitlines():
             line = line.strip()
             if not line:
                 continue

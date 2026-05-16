@@ -1,37 +1,14 @@
-# reconpipe-quiet preset — extends subdomain-enum, disables noisy/slow modules
+# reconpipe-quiet preset — passive sources + light DNS only
 # Compatible with BBOT 2.8.4
-description: "Passive sources + light DNS only"
+# Equivalent to: bbot -t <target> -f subdomain-enum -rf passive -om subdomains
+description: "Passive sources only, suitable for early-engagement recon"
 
-include:
+flags:
   - subdomain-enum
 
-config:
-  modules:
-    massdns:
-      enabled: false
-    dnsbrute:
-      enabled: false
-    dnsbrute_mutations:
-      enabled: false
-    ffuf:
-      enabled: false
-    ffuf_shortnames:
-      enabled: false
-    iis_shortnames:
-      enabled: false
-    ntlm:
-      enabled: false
-    paramminer_cookies:
-      enabled: false
-    paramminer_getparams:
-      enabled: false
-    paramminer_headers:
-      enabled: false
-    wafw00f:
-      enabled: false
-    gowitness:
-      enabled: false
-    nuclei:
-      enabled: false
-    baddns:
-      enabled: false
+require_flags:
+  - passive
+
+output_modules:
+  - subdomains
+  - json

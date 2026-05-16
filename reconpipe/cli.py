@@ -7,9 +7,10 @@ from pathlib import Path
 import click
 import tldextract
 
+from .enum.bbot import BbotError, run_bbot
 from .enum.crtsh import query_crtsh
 from .models import Host
-from .report import report_subs
+from .report import report_headers, report_ips, report_subs, report_subs_ips
 from .store import upsert_hosts
 
 
@@ -32,6 +33,12 @@ def report(input_path, view, scope, flagged_only, output, fmt):
 
     if view == "subs":
         report_subs(input_path, scope_list, output)
+    elif view == "ips":
+        report_ips(input_path, scope_list, output)
+    elif view == "subs-ips":
+        report_subs_ips(input_path, scope_list, output)
+    elif view == "headers":
+        report_headers(input_path, scope_list, output)
     else:
         click.echo(f"View '{view}' not yet implemented.", err=True)
         raise SystemExit(1)
@@ -42,9 +49,10 @@ def report(input_path, view, scope, flagged_only, output, fmt):
 @click.option("--bbot/--no-bbot", default=True)
 @click.option("--bbot-preset", default="reconpipe-quiet")
 @click.option("--bbot-args", default=None)
+@click.option("--bbot-silent", is_flag=True, default=False, help="Suppress BBOT terminal output")
 @click.option("--crtsh/--no-crtsh", default=True)
 @click.option("-o", "--output", "output_path", required=True, help="JSONL output path")
-def enum(input_path, bbot, bbot_preset, bbot_args, crtsh, output_path):
+def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_path):
     """Subdomain enumeration (BBOT + crt.sh)."""
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
@@ -67,7 +75,15 @@ def enum(input_path, bbot, bbot_preset, bbot_args, crtsh, output_path):
                 all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
 
     if bbot:
-        click.echo("[bbot] not yet implemented, skipping", err=True)
+        try:
+            bbot_results = run_bbot(domains, preset=bbot_preset, extra_args=bbot_args, silent=bbot_silent)
+            click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
+            for fqdn, source in bbot_results:
+                ext = tldextract.extract(fqdn)
+                apex = f"{ext.domain}.{ext.suffix}"
+                all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=[source]))
+        except BbotError as e:
+            click.echo(f"[bbot] error: {e}", err=True)
 
     if all_hosts:
         store = upsert_hosts(Path(output_path), all_hosts)
@@ -93,8 +109,21 @@ def _read_domains(path: str) -> list[str]:
 @click.option("--concurrency", default=50, type=int)
 def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurrency):
     """DNS resolution with private-IP detection."""
-    click.echo("resolve: not yet implemented", err=True)
-    raise SystemExit(1)
+    from .resolve import run_resolve
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    resolver_list = [r.strip() for r in resolvers.split(",")]
+    run_resolve(
+        store_path=Path(input_path),
+        resolvers=resolver_list,
+        concurrency=concurrency,
+        wildcard_detect=wildcard_detect,
+        asn_db=asn_db,
+        country_db=country_db,
+    )
 
 
 @cli.command()
@@ -104,10 +133,24 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
 @click.option("--timeout", default=10, type=int)
 @click.option("--user-agent", default=None)
 @click.option("--expected", default=None, help="Path to expected-headers file")
-def headers(input_path, scheme, source, timeout, user_agent, expected):
+@click.option("--force", is_flag=True, default=False, help="Check even unresolved hosts")
+def headers(input_path, scheme, source, timeout, user_agent, expected, force):
     """Security header checks."""
-    click.echo("headers: not yet implemented", err=True)
-    raise SystemExit(1)
+    from .headers import run_headers
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    run_headers(
+        store_path=Path(input_path),
+        scheme=scheme,
+        source=source,
+        timeout=timeout,
+        user_agent=user_agent,
+        expected_path=expected,
+        force=force,
+    )
 
 
 @cli.command()
@@ -116,8 +159,17 @@ def headers(input_path, scheme, source, timeout, user_agent, expected):
 @click.option("--deny", default=None, help="Deny-list file")
 def scope(input_path, allow, deny):
     """Tag hosts with scope status."""
-    click.echo("scope: not yet implemented", err=True)
-    raise SystemExit(1)
+    from .scope import run_scope
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    run_scope(
+        store_path=Path(input_path),
+        allow_path=allow,
+        deny_path=deny,
+    )
 
 
 @cli.command()
