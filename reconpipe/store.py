@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict
+from pathlib import Path
+
+from .models import (
+    AnalysisInfo,
+    DnsInfo,
+    HeaderInfo,
+    Host,
+    ResolvedIp,
+    ScopeInfo,
+    _now_iso,
+)
+
+
+def _rebuild_host(raw: dict) -> Host:
+    dns = None
+    if raw.get("dns"):
+        d = raw["dns"]
+        resolved_ips = [ResolvedIp(**ip) for ip in (d.get("resolved_ips") or [])]
+        dns = DnsInfo(
+            a=d.get("a", []),
+            aaaa=d.get("aaaa", []),
+            cname_chain=d.get("cname_chain", []),
+            resolved_ips=resolved_ips,
+            nxdomain=d.get("nxdomain", False),
+            resolver_used=d.get("resolver_used", ""),
+            resolved_at=d.get("resolved_at", ""),
+        )
+
+    headers = None
+    if raw.get("headers"):
+        headers = HeaderInfo(**raw["headers"])
+
+    scope = None
+    if raw.get("scope"):
+        scope = ScopeInfo(**raw["scope"])
+
+    analysis = None
+    if raw.get("analysis"):
+        analysis = AnalysisInfo(**raw["analysis"])
+
+    return Host(
+        fqdn=raw["fqdn"],
+        apex=raw["apex"],
+        discovery_sources=raw.get("discovery_sources", []),
+        first_seen=raw.get("first_seen", ""),
+        last_updated=raw.get("last_updated", ""),
+        dns=dns,
+        headers=headers,
+        scope=scope,
+        analysis=analysis,
+    )
+
+
+def load_store(path: Path) -> dict[str, Host]:
+    hosts: dict[str, Host] = {}
+    if not path.exists():
+        return hosts
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            raw = json.loads(line)
+            host = _rebuild_host(raw)
+            hosts[host.fqdn] = host
+    return hosts
+
+
+def save_store(path: Path, hosts: dict[str, Host]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for host in sorted(hosts.values(), key=lambda h: h.fqdn):
+            f.write(json.dumps(asdict(host), separators=(",", ":")) + "\n")
+
+
+def merge_host(existing: Host, incoming: Host) -> Host:
+    existing.discovery_sources = list(
+        dict.fromkeys(existing.discovery_sources + incoming.discovery_sources)
+    )
+    existing.last_updated = _now_iso()
+
+    if incoming.dns is not None:
+        existing.dns = incoming.dns
+    if incoming.headers is not None:
+        existing.headers = incoming.headers
+    if incoming.scope is not None:
+        existing.scope = incoming.scope
+    if incoming.analysis is not None:
+        existing.analysis = incoming.analysis
+
+    return existing
+
+
+def upsert_hosts(path: Path, new_hosts: list[Host]) -> dict[str, Host]:
+    store = load_store(path)
+    for host in new_hosts:
+        if host.fqdn in store:
+            store[host.fqdn] = merge_host(store[host.fqdn], host)
+        else:
+            store[host.fqdn] = host
+    save_store(path, store)
+    return store

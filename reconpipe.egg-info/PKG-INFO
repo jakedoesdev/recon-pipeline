@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: reconpipe
+Version: 0.1.0
+Summary: Composable recon pipeline for web/external assessments
+Requires-Python: >=3.11
+Requires-Dist: click>=8.1
+Requires-Dist: dnspython>=2.4
+Requires-Dist: httpx>=0.25
+Requires-Dist: tldextract>=5.0
+Requires-Dist: tenacity>=8.2
+Requires-Dist: maxminddb>=2.4
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
