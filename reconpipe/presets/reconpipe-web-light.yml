@@ -1,0 +1,22 @@
+# reconpipe-web-light — web probing and technology fingerprinting
+# Low-to-moderate intensity: identifies live web services, tech stacks, and basic paths
+# Does NOT run directory brute-force or vulnerability scanning
+# Compatible with BBOT 2.8.4
+description: "Web probing, tech detection, and screenshot capture"
+
+flags:
+  - subdomain-enum
+  - web-basic
+
+require_flags:
+  - safe
+
+output_modules:
+  - subdomains
+  - json
+
+config:
+  web:
+    # httpx probing settings
+    http_timeout: 10
+    http_retries: 2

@@ -1,0 +1,20 @@
+# reconpipe-web-thorough — deep web content discovery
+# High intensity: directory brute-forcing, spidering, and URL extraction
+# Significantly longer runtimes — hours for large targets
+# Compatible with BBOT 2.8.4
+description: "Full web content discovery including directory brute-force and spidering"
+
+flags:
+  - subdomain-enum
+  - web-thorough
+
+output_modules:
+  - subdomains
+  - json
+
+config:
+  web:
+    http_timeout: 15
+    http_retries: 2
+    spider_distance: 2
+    spider_depth: 3

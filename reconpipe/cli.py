@@ -10,7 +10,7 @@ import tldextract
 from .enum.bbot import BbotError, run_bbot
 from .enum.crtsh import query_crtsh
 from .models import Host
-from .report import report_headers, report_ips, report_subs, report_subs_ips
+from .report import report_combined, report_headers, report_ips, report_subs, report_subs_ips
 from .store import upsert_hosts
 
 
@@ -32,13 +32,15 @@ def report(input_path, view, scope, flagged_only, output, fmt):
     scope_list = [s.strip() for s in scope.split(",")]
 
     if view == "subs":
-        report_subs(input_path, scope_list, output)
+        report_subs(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "ips":
-        report_ips(input_path, scope_list, output)
+        report_ips(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "subs-ips":
-        report_subs_ips(input_path, scope_list, output)
+        report_subs_ips(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "headers":
-        report_headers(input_path, scope_list, output)
+        report_headers(input_path, scope_list, output, flagged_only=flagged_only)
+    elif view == "combined":
+        report_combined(input_path, scope_list, output, fmt=fmt or "json", flagged_only=flagged_only)
     else:
         click.echo(f"View '{view}' not yet implemented.", err=True)
         raise SystemExit(1)
@@ -179,17 +181,116 @@ def scope(input_path, allow, deny):
 @click.option("--enrich-online/--no-enrich-online", default=False)
 def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
     """Anomaly detection and takeover checks."""
-    click.echo("analyze: not yet implemented", err=True)
-    raise SystemExit(1)
+    from .analyze import run_analyze
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    run_analyze(
+        store_path=Path(input_path),
+        expected_country=expected_country,
+        fingerprints_path=takeover_fingerprints,
+        enrich_online=enrich_online,
+    )
 
 
 @cli.command()
-@click.option("-i", "--input", "input_path", required=True)
+@click.option("-i", "--input", "input_path", required=True, help="File of root domains")
+@click.option("-o", "--output", "output_path", required=True, help="JSONL store path")
+@click.option("--bbot/--no-bbot", default=True)
 @click.option("--bbot-preset", default="reconpipe-quiet")
-def pipeline(input_path, bbot_preset):
+@click.option("--bbot-silent", is_flag=True, default=False)
+@click.option("--crtsh/--no-crtsh", default=True)
+@click.option("--resolvers", default="1.1.1.1,8.8.8.8,9.9.9.9")
+@click.option("--concurrency", default=50, type=int)
+@click.option("--scheme", type=click.Choice(["https", "http", "both"]), default="https")
+@click.option("--header-source", type=click.Choice(["native", "securityheaders", "both"]), default="native")
+@click.option("--allow", default=None, help="Allow-list file for scope")
+@click.option("--deny", default=None, help="Deny-list file for scope")
+@click.option("--expected-country", default=None)
+@click.option("--enrich-online/--no-enrich-online", default=False)
+def pipeline(
+    input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
+    resolvers, concurrency, scheme, header_source, allow, deny,
+    expected_country, enrich_online,
+):
     """Run full pipeline: enum → resolve → headers → scope → analyze."""
-    click.echo("pipeline: not yet implemented", err=True)
-    raise SystemExit(1)
+    from .analyze import run_analyze
+    from .headers import run_headers
+    from .resolve import run_resolve
+    from .scope import run_scope
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    store = Path(output_path)
+
+    # 1. Enum
+    click.echo("━━━ Phase: enum ━━━", err=True)
+    domains = _read_domains(input_path)
+    if not domains:
+        click.echo("No domains found in input file.", err=True)
+        raise SystemExit(1)
+
+    all_hosts: list[Host] = []
+    if crtsh:
+        for domain in domains:
+            from .enum.crtsh import query_crtsh
+            subs = query_crtsh(domain)
+            click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
+            for fqdn in subs:
+                import tldextract
+                ext = tldextract.extract(fqdn)
+                apex = f"{ext.domain}.{ext.suffix}"
+                all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
+
+    if bbot:
+        try:
+            bbot_results = run_bbot(domains, preset=bbot_preset, silent=bbot_silent)
+            click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
+            for fqdn, source in bbot_results:
+                import tldextract
+                ext = tldextract.extract(fqdn)
+                apex = f"{ext.domain}.{ext.suffix}"
+                all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=[source]))
+        except BbotError as e:
+            click.echo(f"[bbot] error: {e}", err=True)
+
+    if all_hosts:
+        from .store import upsert_hosts
+        result = upsert_hosts(store, all_hosts)
+        click.echo(f"Store: {len(result)} total hosts", err=True)
+    else:
+        click.echo("No subdomains discovered.", err=True)
+        raise SystemExit(1)
+
+    # 2. Resolve
+    click.echo("━━━ Phase: resolve ━━━", err=True)
+    resolver_list = [r.strip() for r in resolvers.split(",")]
+    run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+
+    # 3. Headers
+    click.echo("━━━ Phase: headers ━━━", err=True)
+    run_headers(store_path=store, scheme=scheme, source=header_source)
+
+    # 4. Scope
+    if allow or deny:
+        click.echo("━━━ Phase: scope ━━━", err=True)
+        run_scope(store_path=store, allow_path=allow, deny_path=deny)
+    else:
+        click.echo("━━━ Phase: scope (skipped — no allow/deny files) ━━━", err=True)
+
+    # 5. Analyze
+    click.echo("━━━ Phase: analyze ━━━", err=True)
+    run_analyze(
+        store_path=store,
+        expected_country=expected_country,
+        enrich_online=enrich_online,
+    )
+
+    click.echo(f"━━━ Pipeline complete: {store} ━━━", err=True)
 
 
 @cli.command()
@@ -200,5 +301,6 @@ def pipeline(input_path, bbot_preset):
 @click.option("--format", "fmt", type=click.Choice(["text", "json", "csv"]), default="text")
 def diff(old, new, scope, output, fmt):
     """Diff two JSONL snapshots."""
-    click.echo("diff: not yet implemented", err=True)
-    raise SystemExit(1)
+    from .diff import run_diff
+
+    run_diff(old_path=old, new_path=new, scope=scope, output=output, fmt=fmt)

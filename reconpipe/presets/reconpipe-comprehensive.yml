@@ -1,0 +1,37 @@
+# reconpipe-comprehensive — full-spectrum external recon
+# Most aggressive: combines all discovery methods, web crawling, and vuln scanning
+# Expect multi-hour runtimes for large targets
+# Use only with explicit written authorization
+# Compatible with BBOT 2.8.4
+description: "Full recon chain: passive + active enum, web discovery, port scan, nuclei"
+
+flags:
+  - subdomain-enum
+  - web-thorough
+
+modules:
+  - nuclei
+  - nmap
+
+config:
+  dns:
+    brute_force: true
+    brute_force_wordlist: https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-20000.txt
+  web:
+    http_timeout: 15
+    spider_distance: 3
+    spider_depth: 4
+  modules:
+    nuclei:
+      severity: critical,high,medium,low
+      rate_limit: 30
+      concurrency: 8
+      tags: cve,misconfig,exposure,token,takeover
+    nmap:
+      # Top 1000 ports, service version detection
+      ports: top_1000
+      arguments: -sV --open
+
+output_modules:
+  - subdomains
+  - json

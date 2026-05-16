@@ -1,0 +1,19 @@
+# reconpipe-active — passive sources + DNS brute-forcing
+# Moderate intensity: adds active DNS resolution and brute-force subdomain discovery
+# Expect longer runtimes than reconpipe-quiet (minutes per target vs seconds)
+# Compatible with BBOT 2.8.4
+description: "Passive + active DNS brute-force for thorough subdomain coverage"
+
+flags:
+  - subdomain-enum
+
+output_modules:
+  - subdomains
+  - json
+
+config:
+  dns:
+    brute_force: true
+    # Use a smaller wordlist for reasonable runtimes
+    # Override with --bbot-args "-c dns.brute_force_wordlist=/path/to/big.txt"
+    brute_force_wordlist: https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt

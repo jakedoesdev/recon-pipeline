@@ -1,0 +1,28 @@
+# reconpipe-vulns — vulnerability identification via nuclei templates
+# Aggressive: runs nuclei against discovered web endpoints
+# Use only against targets you have explicit authorization to test
+# Compatible with BBOT 2.8.4
+description: "Subdomain enum + nuclei vulnerability scanning (authorized targets only)"
+
+flags:
+  - subdomain-enum
+  - web-basic
+
+modules:
+  - nuclei
+
+config:
+  modules:
+    nuclei:
+      # Limit to informational + low + medium severity by default
+      # Override for criticals: --bbot-args "-c modules.nuclei.severity=critical,high,medium,low"
+      severity: medium,low,info
+      # Rate limit to avoid overwhelming targets
+      rate_limit: 50
+      concurrency: 10
+      # Use only vetted templates
+      tags: cve,misconfig,exposure,token
+
+output_modules:
+  - subdomains
+  - json
