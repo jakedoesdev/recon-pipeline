@@ -69,17 +69,17 @@ Download from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-
 
 ## Usage
 
-### Full pipeline (recommended for first run)
+### Individual commands (recommended)
+
+Each phase can be run independently, reading from and writing to the same JSONL store. Start here — running each module individually lets you inspect output at every stage, tune flags, and understand what each phase contributes before chaining them together.
+
+### Full pipeline
 
 ```bash
 rp pipeline -i domains.txt -o store.jsonl --allow scope-allow.txt --deny scope-deny.txt
 ```
 
-This runs all phases in sequence: enum → resolve → headers → tls → rdap → scope → analyze.
-
-### Individual commands
-
-Each phase can be run independently, reading from and writing to the same JSONL store.
+Runs all phases in sequence: enum → scope → resolve → headers → tls → rdap → analyze. Use this once you're comfortable with the individual modules and know which options you want. For a first engagement, run each phase separately so you can review results between steps.
 
 #### 1. Subdomain enumeration
 
@@ -98,55 +98,13 @@ example.com
 target.org
 ```
 
-#### 2. DNS resolution
-
-```bash
-rp resolve -i store.jsonl
-rp resolve -i store.jsonl --resolvers 1.1.1.1,8.8.8.8   # custom resolvers
-rp resolve -i store.jsonl --concurrency 100              # parallel lookups
-rp resolve -i store.jsonl --no-wildcard-detect           # skip wildcard check
-rp resolve -i store.jsonl --asn-db GeoLite2-ASN.mmdb --country-db GeoLite2-Country.mmdb
-```
-
-Resolves A, AAAA, and CNAME records. Walks CNAME chains (up to 10 hops). Detects wildcard DNS by querying 3 random labels per apex. Flags private IPs (RFC 1918, loopback, link-local).
-
-#### 3. Security headers
-
-```bash
-rp headers -i store.jsonl
-rp headers -i store.jsonl --scheme both                  # check http and https
-rp headers -i store.jsonl --source securityheaders       # use securityheaders.com
-rp headers -i store.jsonl --source both                  # native + securityheaders.com
-rp headers -i store.jsonl --force                        # check even unresolved hosts
-rp headers -i store.jsonl --expected headers.txt         # custom expected headers file
-```
-
-Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers.
-
-#### 4. TLS certificate collection
-
-```bash
-rp tls -i store.jsonl
-rp tls -i store.jsonl --port 8443                       # non-standard TLS port
-```
-
-Connects to each resolved host via TLS and extracts the live certificate: subject, issuer, validity dates, serial number, SANs, and self-signed status. SANs can reveal additional domains not found during enumeration. Requires the `cryptography` package.
-
-#### 5. RDAP registration lookup
-
-```bash
-rp rdap -i store.jsonl
-```
-
-Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skip with `rp pipeline --no-rdap`.
-
-#### 6. Scope tagging
+#### 2. Scope tagging
 
 ```bash
 rp scope -i store.jsonl --allow allow.txt --deny deny.txt
 ```
 
-Tags every host as `in`, `out`, or `unmatched`. Deny rules are evaluated first (deny wins).
+Tags every host as `in`, `out`, or `unmatched`. Deny rules are evaluated first (deny wins). Hosts tagged `out` are skipped by all downstream modules (resolve, headers, tls, rdap, analyze) but remain in the store with any previously collected data intact.
 
 Scope file syntax:
 
@@ -160,6 +118,48 @@ api.example.com
 # Regex
 re:.*\.dev\.example\.com
 ```
+
+#### 3. DNS resolution
+
+```bash
+rp resolve -i store.jsonl
+rp resolve -i store.jsonl --resolvers 1.1.1.1,8.8.8.8   # custom resolvers
+rp resolve -i store.jsonl --concurrency 100              # parallel lookups
+rp resolve -i store.jsonl --no-wildcard-detect           # skip wildcard check
+rp resolve -i store.jsonl --asn-db GeoLite2-ASN.mmdb --country-db GeoLite2-Country.mmdb
+```
+
+Resolves A, AAAA, and CNAME records. Walks CNAME chains (up to 10 hops). Detects wildcard DNS by querying 3 random labels per apex. Flags private IPs (RFC 1918, loopback, link-local).
+
+#### 4. Security headers
+
+```bash
+rp headers -i store.jsonl
+rp headers -i store.jsonl --scheme both                  # check http and https
+rp headers -i store.jsonl --source securityheaders       # use securityheaders.com
+rp headers -i store.jsonl --source both                  # native + securityheaders.com
+rp headers -i store.jsonl --force                        # check even unresolved hosts
+rp headers -i store.jsonl --expected headers.txt         # custom expected headers file
+```
+
+Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers.
+
+#### 5. TLS certificate collection
+
+```bash
+rp tls -i store.jsonl
+rp tls -i store.jsonl --port 8443                       # non-standard TLS port
+```
+
+Connects to each resolved host via TLS and extracts the live certificate: subject, issuer, validity dates, serial number, SANs, and self-signed status. SANs can reveal additional domains not found during enumeration. Requires the `cryptography` package.
+
+#### 6. RDAP registration lookup
+
+```bash
+rp rdap -i store.jsonl
+```
+
+Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skip with `rp pipeline --no-rdap`.
 
 #### 7. Analyze
 

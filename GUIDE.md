@@ -92,7 +92,7 @@ Populated by `rp scope`. Classifies each host against your allow/deny lists.
 
 | Field | Type | Description |
 |---|---|---|
-| `status` | string | One of three values: `"in"` (matched an allow rule — authorized target), `"out"` (matched a deny rule — explicitly excluded), or `"unmatched"` (no rule covers this host — needs review). Deny rules take priority over allow rules. |
+| `status` | string | One of three values: `"in"` (matched an allow rule — authorized target), `"out"` (matched a deny rule — explicitly excluded, skipped by all downstream modules), or `"unmatched"` (no rule covers this host — needs review). Deny rules take priority over allow rules. |
 | `matched_rule` | string or null | The specific rule that matched (e.g. `"allow:*.example.com"` or `"deny:*.cloudfront.net"`). Null for unmatched hosts. |
 | `warning` | string or null | Advisory message. Set for unmatched hosts to prompt review. |
 
