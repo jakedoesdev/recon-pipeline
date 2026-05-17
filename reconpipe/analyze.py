@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -91,17 +92,61 @@ def _check_private_ip_external(host: Host) -> bool:
     return any(rip.is_private for rip in host.dns.resolved_ips)
 
 
-def _check_ip_version(host: Host) -> str | None:
-    """Informational: ipv6_only or ipv4_only."""
-    if not host.dns or not host.dns.resolved_ips:
-        return None
-    has_v4 = bool(host.dns.a)
-    has_v6 = bool(host.dns.aaaa)
-    if has_v6 and not has_v4:
-        return "ipv6_only"
-    if has_v4 and not has_v6:
-        return "ipv4_only"
-    return None
+
+_STATUS_CATEGORIES: dict[str, list[int]] = {
+    "http_auth_required": [401, 403],
+    "http_server_error": [500, 502, 503],
+    "http_redirect_permanent": [301, 308],
+    "http_not_found": [404],
+}
+
+_VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?")
+
+_VERSION_SKIP_HEADERS = frozenset({
+    "content-security-policy",
+    "strict-transport-security",
+    "permissions-policy",
+    "referrer-policy",
+    "cache-control",
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "accept-ranges",
+    "vary",
+    "date",
+    "expires",
+    "last-modified",
+    "etag",
+    "age",
+    "set-cookie",
+    "access-control-allow-origin",
+    "access-control-allow-methods",
+    "access-control-allow-headers",
+    "access-control-max-age",
+})
+
+
+def _check_status_code(host: Host) -> list[str]:
+    if not host.headers or not host.headers.status_code:
+        return []
+    code = host.headers.status_code
+    flags = []
+    for flag, codes in _STATUS_CATEGORIES.items():
+        if code in codes:
+            flags.append(f"{flag}:{code}")
+    return flags
+
+
+def _check_version_disclosure(host: Host) -> list[str]:
+    if not host.headers or not host.headers.present:
+        return []
+    flags = []
+    for header, value in host.headers.present.items():
+        if header in _VERSION_SKIP_HEADERS:
+            continue
+        if _VERSION_RE.search(value):
+            flags.append(f"version_disclosed:{header}")
+    return flags
 
 
 def _check_multiple_apex_owners(hosts: dict[str, Host]) -> set[str]:
@@ -171,6 +216,8 @@ def run_analyze(
     stale_count = 0
     geo_count = 0
     private_count = 0
+    status_count = 0
+    version_count = 0
 
     for host in hosts.values():
         if not host.analysis:
@@ -206,14 +253,19 @@ def run_analyze(
             existing_flags.add("private_ip_external")
             private_count += 1
 
-        # IP version info
-        ip_ver = _check_ip_version(host)
-        if ip_ver:
-            existing_flags.add(ip_ver)
-
         # Multiple apex owners
         if host.apex in multi_apex:
             existing_flags.add("multiple_apex_owners")
+
+        # HTTP status code flags
+        for sf in _check_status_code(host):
+            existing_flags.add(sf)
+            status_count += 1
+
+        # Version/software disclosure in headers
+        for vf in _check_version_disclosure(host):
+            existing_flags.add(vf)
+            version_count += 1
 
         host.analysis.flags = sorted(existing_flags)
 
@@ -222,6 +274,7 @@ def run_analyze(
     flagged_total = sum(1 for h in hosts.values() if h.analysis and h.analysis.flags)
     logger.info(
         "Analysis complete: %d takeover candidates, %d stale CNAMEs, %d geo mismatches, "
-        "%d private IPs, %d total hosts flagged",
-        takeover_count, stale_count, geo_count, private_count, flagged_total,
+        "%d private IPs, %d status flags, %d version disclosures, %d total hosts flagged",
+        takeover_count, stale_count, geo_count, private_count,
+        status_count, version_count, flagged_total,
     )

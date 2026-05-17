@@ -18,6 +18,9 @@ class ResolvedIp:
 class DnsInfo:
     a: list[str] = field(default_factory=list)
     aaaa: list[str] = field(default_factory=list)
+    txt: list[str] = field(default_factory=list)
+    mx: list[str] = field(default_factory=list)
+    ns: list[str] = field(default_factory=list)
     cname_chain: list[str] = field(default_factory=list)
     resolved_ips: list[ResolvedIp] = field(default_factory=list)
     nxdomain: bool = False

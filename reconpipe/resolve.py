@@ -101,6 +101,9 @@ async def _resolve_host(
 
     a_records = await _resolve_record(resolver, host.fqdn, "A")
     aaaa_records = await _resolve_record(resolver, host.fqdn, "AAAA")
+    txt_records = await _resolve_record(resolver, host.fqdn, "TXT")
+    mx_records = await _resolve_record(resolver, host.fqdn, "MX")
+    ns_records = await _resolve_record(resolver, host.fqdn, "NS")
     cname_chain = await _walk_cname_chain(resolver, host.fqdn)
 
     # If there's a CNAME chain, also resolve the final target
@@ -130,6 +133,9 @@ async def _resolve_host(
     host.dns = DnsInfo(
         a=a_records,
         aaaa=aaaa_records,
+        txt=txt_records,
+        mx=mx_records,
+        ns=ns_records,
         cname_chain=cname_chain,
         resolved_ips=resolved_ips,
         nxdomain=False,

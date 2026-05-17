@@ -131,12 +131,11 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
 @click.option("--scheme", type=click.Choice(["https", "http", "both"]), default="https")
-@click.option("--source", type=click.Choice(["native", "securityheaders", "both"]), default="native")
 @click.option("--timeout", default=10, type=int)
 @click.option("--user-agent", default=None)
 @click.option("--expected", default=None, help="Path to expected-headers file")
 @click.option("--force", is_flag=True, default=False, help="Check even unresolved hosts")
-def headers(input_path, scheme, source, timeout, user_agent, expected, force):
+def headers(input_path, scheme, timeout, user_agent, expected, force):
     """Security header checks."""
     from .headers import run_headers
 
@@ -147,7 +146,6 @@ def headers(input_path, scheme, source, timeout, user_agent, expected, force):
     run_headers(
         store_path=Path(input_path),
         scheme=scheme,
-        source=source,
         timeout=timeout,
         user_agent=user_agent,
         expected_path=expected,
@@ -205,14 +203,13 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
 @click.option("--resolvers", default="1.1.1.1,8.8.8.8,9.9.9.9")
 @click.option("--concurrency", default=50, type=int)
 @click.option("--scheme", type=click.Choice(["https", "http", "both"]), default="https")
-@click.option("--header-source", type=click.Choice(["native", "securityheaders", "both"]), default="native")
 @click.option("--allow", default=None, help="Allow-list file for scope")
 @click.option("--deny", default=None, help="Deny-list file for scope")
 @click.option("--expected-country", default=None)
 @click.option("--enrich-online/--no-enrich-online", default=False)
 def pipeline(
     input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
-    resolvers, concurrency, scheme, header_source, allow, deny,
+    resolvers, concurrency, scheme, allow, deny,
     expected_country, enrich_online,
 ):
     """Run full pipeline: enum → resolve → headers → scope → analyze."""
@@ -273,7 +270,7 @@ def pipeline(
 
     # 3. Headers
     click.echo("━━━ Phase: headers ━━━", err=True)
-    run_headers(store_path=store, scheme=scheme, source=header_source)
+    run_headers(store_path=store, scheme=scheme)
 
     # 4. Scope
     if allow or deny:

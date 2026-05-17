@@ -23,6 +23,9 @@ def _rebuild_host(raw: dict) -> Host:
         dns = DnsInfo(
             a=d.get("a", []),
             aaaa=d.get("aaaa", []),
+            txt=d.get("txt", []),
+            mx=d.get("mx", []),
+            ns=d.get("ns", []),
             cname_chain=d.get("cname_chain", []),
             resolved_ips=resolved_ips,
             nxdomain=d.get("nxdomain", False),

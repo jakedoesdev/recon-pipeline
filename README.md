@@ -268,10 +268,10 @@ Custom presets can be used with `--bbot-preset <name>` (BBOT looks in `~/.bbot/p
 ### Quick passive recon
 
 ```bash
-echo "tesla.com" > targets.txt
-rp enum -i targets.txt -o tesla.jsonl --no-bbot
-rp resolve -i tesla.jsonl
-rp report -i tesla.jsonl --view subs
+echo "example.com" > targets.txt
+rp enum -i targets.txt -o example.jsonl --no-bbot
+rp resolve -i example.jsonl
+rp report -i example.jsonl --view subs
 ```
 
 ### Full assessment workflow
