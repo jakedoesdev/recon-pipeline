@@ -293,32 +293,32 @@ def pipeline(
         click.echo("No subdomains discovered.", err=True)
         raise SystemExit(1)
 
-    # 2. Resolve
-    click.echo("━━━ Phase: resolve ━━━", err=True)
-    resolver_list = [r.strip() for r in resolvers.split(",")]
-    run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
-
-    # 3. Headers
-    click.echo("━━━ Phase: headers ━━━", err=True)
-    run_headers(store_path=store, scheme=scheme)
-
-    # 4. TLS
-    click.echo("━━━ Phase: tls ━━━", err=True)
-    run_tls(store_path=store)
-
-    # 5. RDAP
-    if rdap:
-        click.echo("━━━ Phase: rdap ━━━", err=True)
-        run_rdap(store_path=store)
-    else:
-        click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
-
-    # 6. Scope
+    # 2. Scope (run early so downstream phases skip denied hosts)
     if allow or deny:
         click.echo("━━━ Phase: scope ━━━", err=True)
         run_scope(store_path=store, allow_path=allow, deny_path=deny)
     else:
         click.echo("━━━ Phase: scope (skipped — no allow/deny files) ━━━", err=True)
+
+    # 3. Resolve
+    click.echo("━━━ Phase: resolve ━━━", err=True)
+    resolver_list = [r.strip() for r in resolvers.split(",")]
+    run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+
+    # 4. Headers
+    click.echo("━━━ Phase: headers ━━━", err=True)
+    run_headers(store_path=store, scheme=scheme)
+
+    # 5. TLS
+    click.echo("━━━ Phase: tls ━━━", err=True)
+    run_tls(store_path=store)
+
+    # 6. RDAP
+    if rdap:
+        click.echo("━━━ Phase: rdap ━━━", err=True)
+        run_rdap(store_path=store)
+    else:
+        click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
 
     # 7. Analyze
     click.echo("━━━ Phase: analyze ━━━", err=True)

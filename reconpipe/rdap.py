@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 
 from .models import RdapInfo, _now_iso
-from .store import load_store, save_store
+from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,8 @@ def run_rdap(store_path: Path) -> None:
         logger.warning("No hosts in store")
         return
 
-    apexes: set[str] = {h.apex for h in hosts.values()}
+    in_scope_hosts = [h for h in hosts.values() if not is_out_of_scope(h)]
+    apexes: set[str] = {h.apex for h in in_scope_hosts}
     logger.info("Querying RDAP for %d apex domains", len(apexes))
 
     rdap_cache: dict[str, RdapInfo | None] = {}
@@ -106,7 +107,7 @@ def run_rdap(store_path: Path) -> None:
         if info:
             success += 1
 
-    for host in hosts.values():
+    for host in in_scope_hosts:
         info = rdap_cache.get(host.apex)
         if info:
             host.rdap = info

@@ -124,6 +124,10 @@ def merge_host(existing: Host, incoming: Host) -> Host:
     return existing
 
 
+def is_out_of_scope(host: Host) -> bool:
+    return host.scope is not None and host.scope.status == "out"
+
+
 def upsert_hosts(path: Path, new_hosts: list[Host]) -> dict[str, Host]:
     store = load_store(path)
     for host in new_hosts:

@@ -9,7 +9,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 
 from .models import TlsInfo, _now_iso
-from .store import load_store, save_store
+from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def run_tls(store_path: Path, port: int = 443) -> None:
 
     targets = [
         h for h in hosts.values()
-        if h.dns and not h.dns.nxdomain and h.dns.resolved_ips
+        if not is_out_of_scope(h) and h.dns and not h.dns.nxdomain and h.dns.resolved_ips
     ]
 
     logger.info("Checking TLS certificates on %d hosts", len(targets))

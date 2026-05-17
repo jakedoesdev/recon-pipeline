@@ -14,7 +14,7 @@ import dns.rdatatype
 import dns.resolver
 
 from .models import DnsInfo, Host, ResolvedIp, _now_iso
-from .store import load_store, save_store
+from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
 
@@ -230,14 +230,15 @@ async def _resolve_all(
         apexes = {h.apex for h in hosts.values()}
         wildcard_map = await _detect_wildcards(resolver, apexes)
 
-    # Resolve all hosts with concurrency limit
+    # Resolve all hosts with concurrency limit (skip denied hosts)
     sem = asyncio.Semaphore(concurrency)
+    in_scope_hosts = {fqdn: h for fqdn, h in hosts.items() if not is_out_of_scope(h)}
 
     async def resolve_with_sem(host: Host) -> Host:
         async with sem:
             return await _resolve_host(resolver, host, resolver_str, asn_lookup, country_lookup)
 
-    tasks = [resolve_with_sem(host) for host in hosts.values()]
+    tasks = [resolve_with_sem(host) for host in in_scope_hosts.values()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     for result in results:
@@ -279,7 +280,9 @@ def run_resolve(
         logger.warning("No hosts in store to resolve")
         return
 
-    logger.info("Resolving %d hosts (concurrency=%d, resolvers=%s)", len(hosts), concurrency, resolvers)
+    skipped = sum(1 for h in hosts.values() if is_out_of_scope(h))
+    logger.info("Resolving %d hosts, %d skipped as out-of-scope (concurrency=%d, resolvers=%s)",
+                len(hosts) - skipped, skipped, concurrency, resolvers)
 
     hosts = asyncio.run(_resolve_all(
         hosts=hosts,

@@ -13,7 +13,7 @@ import httpx
 from .config import get_key
 from .fingerprints import BUILTIN_FINGERPRINTS, TakeoverFingerprint
 from .models import AnalysisInfo, Host, ResolvedIp
-from .store import load_store, save_store
+from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
 
@@ -478,10 +478,11 @@ def run_analyze(
         return
 
     fingerprints = _load_fingerprints(fingerprints_path)
-    multi_apex = _check_multiple_apex_owners(hosts)
-    majority_asn = _find_majority_asn(hosts)
+    multi_apex = _check_multiple_apex_owners(in_scope_hosts)
+    majority_asn = _find_majority_asn(in_scope_hosts)
 
-    logger.info("Analyzing %d hosts", len(hosts))
+    in_scope_hosts = {fqdn: h for fqdn, h in hosts.items() if not is_out_of_scope(h)}
+    logger.info("Analyzing %d hosts (%d skipped as out-of-scope)", len(in_scope_hosts), len(hosts) - len(in_scope_hosts))
 
     takeover_count = 0
     stale_count = 0
@@ -497,7 +498,7 @@ def run_analyze(
     cors_count = 0
     cookie_count = 0
 
-    for host in hosts.values():
+    for host in in_scope_hosts.values():
         if not host.analysis:
             host.analysis = AnalysisInfo()
 
@@ -594,7 +595,7 @@ def run_analyze(
 
     save_store(store_path, hosts)
 
-    flagged_total = sum(1 for h in hosts.values() if h.analysis and h.analysis.flags)
+    flagged_total = sum(1 for h in in_scope_hosts.values() if h.analysis and h.analysis.flags)
     logger.info(
         "Analysis complete: %d takeover, %d stale CNAMEs, %d geo, %d private IPs, "
         "%d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, %d CORS, "

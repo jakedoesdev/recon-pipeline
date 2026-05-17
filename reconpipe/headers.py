@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 from .models import HeaderInfo, Host, _now_iso
-from .store import load_store, save_store
+from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
 
@@ -210,9 +210,11 @@ def run_headers(
     expected = _load_expected(expected_path)
     ua = user_agent or DEFAULT_UA
 
-    # Filter to hosts that resolved (unless --force)
+    # Filter to hosts that resolved (unless --force), skip denied hosts
     targets = []
     for host in hosts.values():
+        if is_out_of_scope(host):
+            continue
         if not force and (not host.dns or host.dns.nxdomain):
             continue
         if not force and host.dns and not host.dns.resolved_ips:
