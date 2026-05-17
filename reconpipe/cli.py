@@ -130,6 +130,26 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
 
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
+@click.option("--resolvers", default="1.1.1.1,8.8.8.8,9.9.9.9")
+@click.option("--concurrency", default=50, type=int)
+def reverse(input_path, resolvers, concurrency):
+    """Reverse DNS (PTR) lookups on discovered IPs."""
+    from .reverse import run_reverse
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    resolver_list = [r.strip() for r in resolvers.split(",")]
+    run_reverse(
+        store_path=Path(input_path),
+        resolvers=resolver_list,
+        concurrency=concurrency,
+    )
+
+
+@cli.command()
+@click.option("-i", "--input", "input_path", required=True)
 @click.option("--scheme", type=click.Choice(["https", "http", "both"]), default="https")
 @click.option("--timeout", default=10, type=int)
 @click.option("--user-agent", default=None)
@@ -240,11 +260,12 @@ def pipeline(
     resolvers, concurrency, scheme, allow, deny,
     rdap, expected_country, enrich_online,
 ):
-    """Run full pipeline: enum → resolve → headers → tls → rdap → scope → analyze."""
+    """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → analyze."""
     from .analyze import run_analyze
     from .headers import run_headers
     from .rdap import run_rdap
     from .resolve import run_resolve
+    from .reverse import run_reverse
     from .scope import run_scope
     from .tls import run_tls
 
@@ -305,22 +326,26 @@ def pipeline(
     resolver_list = [r.strip() for r in resolvers.split(",")]
     run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
 
-    # 4. Headers
+    # 4. Reverse DNS
+    click.echo("━━━ Phase: reverse ━━━", err=True)
+    run_reverse(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+
+    # 5. Headers
     click.echo("━━━ Phase: headers ━━━", err=True)
     run_headers(store_path=store, scheme=scheme)
 
-    # 5. TLS
+    # 6. TLS
     click.echo("━━━ Phase: tls ━━━", err=True)
     run_tls(store_path=store)
 
-    # 6. RDAP
+    # 7. RDAP
     if rdap:
         click.echo("━━━ Phase: rdap ━━━", err=True)
         run_rdap(store_path=store)
     else:
         click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
 
-    # 7. Analyze
+    # 8. Analyze
     click.echo("━━━ Phase: analyze ━━━", err=True)
     run_analyze(
         store_path=store,

@@ -79,7 +79,7 @@ Each phase can be run independently, reading from and writing to the same JSONL 
 rp pipeline -i domains.txt -o store.jsonl --allow scope-allow.txt --deny scope-deny.txt
 ```
 
-Runs all phases in sequence: enum → scope → resolve → headers → tls → rdap → analyze. Use this once you're comfortable with the individual modules and know which options you want. For a first engagement, run each phase separately so you can review results between steps.
+Runs all phases in sequence: enum → scope → resolve → reverse → headers → tls → rdap → analyze. Use this once you're comfortable with the individual modules and know which options you want. For a first engagement, run each phase separately so you can review results between steps.
 
 #### 1. Subdomain enumeration
 
@@ -131,7 +131,17 @@ rp resolve -i store.jsonl --asn-db GeoLite2-ASN.mmdb --country-db GeoLite2-Count
 
 Resolves A, AAAA, and CNAME records. Walks CNAME chains (up to 10 hops). Detects wildcard DNS by querying 3 random labels per apex. Flags private IPs (RFC 1918, loopback, link-local).
 
-#### 4. Security headers
+#### 4. Reverse DNS
+
+```bash
+rp reverse -i store.jsonl
+rp reverse -i store.jsonl --resolvers 1.1.1.1,8.8.8.8
+rp reverse -i store.jsonl --concurrency 100
+```
+
+Performs PTR lookups on all unique public IPs discovered during resolution. PTR hostnames are stored on each `ResolvedIp` entry. Hosts sharing infrastructure often have PTR records pointing to hostnames not found by any passive source.
+
+#### 5. Security headers
 
 ```bash
 rp headers -i store.jsonl
@@ -144,7 +154,7 @@ rp headers -i store.jsonl --expected headers.txt         # custom expected heade
 
 Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers.
 
-#### 5. TLS certificate collection
+#### 6. TLS certificate collection
 
 ```bash
 rp tls -i store.jsonl
@@ -153,7 +163,7 @@ rp tls -i store.jsonl --port 8443                       # non-standard TLS port
 
 Connects to each resolved host via TLS and extracts the live certificate: subject, issuer, validity dates, serial number, SANs, and self-signed status. SANs can reveal additional domains not found during enumeration. Requires the `cryptography` package.
 
-#### 6. RDAP registration lookup
+#### 7. RDAP registration lookup
 
 ```bash
 rp rdap -i store.jsonl
@@ -161,7 +171,7 @@ rp rdap -i store.jsonl
 
 Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skip with `rp pipeline --no-rdap`.
 
-#### 7. Analyze
+#### 8. Analyze
 
 ```bash
 rp analyze -i store.jsonl
@@ -183,11 +193,12 @@ Detects:
 - Expired or expiring TLS certificates, self-signed certs
 - CORS misconfigurations (wildcard origin with credentials)
 - Cookie security (missing Secure, HttpOnly flags)
+- TLS SANs containing subdomains not in the store (potential undiscovered hosts)
 - HTTP status code anomalies and version disclosure in headers
 
 Each flag is assigned a severity rating (critical, high, medium, low). The host's overall severity reflects its highest-severity flag for easy filtering.
 
-#### 8. Report
+#### 9. Report
 
 ```bash
 rp report -i store.jsonl --view combined                 # full JSONL (default)
@@ -203,7 +214,7 @@ rp report -i store.jsonl --flagged-only                  # only hosts with analy
 rp report -i store.jsonl --view subs -o subs.txt         # write to file
 ```
 
-#### 9. Diff
+#### 10. Diff
 
 ```bash
 rp diff --old scan1.jsonl --new scan2.jsonl
@@ -229,6 +240,7 @@ Compares two snapshots and reports:
 | crt.sh | `reconpipe/enum/crtsh.py` | Certificate Transparency log queries with retry/backoff |
 | BBOT | `reconpipe/enum/bbot.py` | Subprocess wrapper for BBOT, parses JSON output, passes secrets |
 | Resolve | `reconpipe/resolve.py` | Async DNS (dnspython), CNAME walking, wildcard detection, MaxMind enrichment |
+| Reverse | `reconpipe/reverse.py` | PTR (reverse DNS) lookups on discovered public IPs |
 | Headers | `reconpipe/headers.py` | Security header checks, page title/technology detection, cookie analysis |
 | TLS | `reconpipe/tls.py` | Live TLS certificate collection (subject, issuer, SANs, expiry) |
 | RDAP | `reconpipe/rdap.py` | RDAP registration lookups per apex (registrar, expiry, status, DNSSEC) |

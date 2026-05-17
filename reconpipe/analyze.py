@@ -355,6 +355,7 @@ _FLAG_SEVERITY: dict[str, str] = {
     "http_not_found": "low",
     "http_redirect_permanent": "low",
     "wildcard_dns": "low",
+    "sans_new_subdomains": "low",
 }
 
 _DOMAIN_STATUS_SEVERITY: dict[str, str] = {
@@ -466,6 +467,16 @@ def _check_cookies(host: Host) -> list[str]:
     return flags
 
 
+def _check_sans_new_subdomains(host: Host, all_fqdns: set[str]) -> bool:
+    if not host.tls or not host.tls.sans:
+        return False
+    for san in host.tls.sans:
+        san_lower = san.lower().lstrip("*.")
+        if san_lower and san_lower not in all_fqdns:
+            return True
+    return False
+
+
 def run_analyze(
     store_path: Path,
     expected_country: str | None = None,
@@ -477,12 +488,13 @@ def run_analyze(
         logger.warning("No hosts in store")
         return
 
+    in_scope_hosts = {fqdn: h for fqdn, h in hosts.items() if not is_out_of_scope(h)}
+    logger.info("Analyzing %d hosts (%d skipped as out-of-scope)", len(in_scope_hosts), len(hosts) - len(in_scope_hosts))
+
     fingerprints = _load_fingerprints(fingerprints_path)
     multi_apex = _check_multiple_apex_owners(in_scope_hosts)
     majority_asn = _find_majority_asn(in_scope_hosts)
-
-    in_scope_hosts = {fqdn: h for fqdn, h in hosts.items() if not is_out_of_scope(h)}
-    logger.info("Analyzing %d hosts (%d skipped as out-of-scope)", len(in_scope_hosts), len(hosts) - len(in_scope_hosts))
+    all_fqdns = set(hosts.keys())
 
     takeover_count = 0
     stale_count = 0
@@ -589,6 +601,10 @@ def run_analyze(
         for vf in _check_version_disclosure(host):
             existing_flags.add(vf)
             version_count += 1
+
+        # TLS SANs contain subdomains not in the store
+        if _check_sans_new_subdomains(host, all_fqdns):
+            existing_flags.add("sans_new_subdomains")
 
         host.analysis.flags = sorted(existing_flags)
         host.analysis.severity = _max_severity(host.analysis.flags)

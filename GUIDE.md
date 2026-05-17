@@ -51,6 +51,7 @@ Each entry in `dns.resolved_ips`:
 | `asn` | int or null | Autonomous System Number. Populated if a MaxMind ASN database was provided to `rp resolve`, or by `rp analyze --enrich-online`. |
 | `asn_org` | string or null | Organization name for the ASN (e.g. `"Cloudflare, Inc."`). |
 | `country` | string or null | ISO country code (e.g. `"US"`). Populated via MaxMind GeoIP or online enrichment. |
+| `ptr` | string or null | Reverse DNS (PTR) hostname for this IP. Populated by `rp reverse`. Null if no PTR record exists or `rp reverse` hasn't been run. |
 
 ### headers (HeaderInfo)
 
@@ -103,7 +104,7 @@ Populated by `rp analyze`. Contains automated anomaly detection results.
 | Field | Type | Description |
 |---|---|---|
 | `severity` | string or null | Highest severity across all flags for this host: `"critical"`, `"high"`, `"medium"`, or `"low"`. Null if no flags are set. Severity is computed automatically from the flag types (see severity table below). |
-| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"cert_expired"` (live TLS certificate has expired), `"cert_expiring_soon:<N>d"` (certificate expires within 30 days), `"cert_self_signed"` (certificate issuer matches subject — self-signed), `"cors_wildcard_credentials"` (CORS allows all origins with credentials — credential theft risk), `"cookies_missing_secure"` (at least one cookie missing the Secure flag — sent over HTTP), `"cookies_missing_httponly"` (at least one cookie missing HttpOnly — accessible via JavaScript), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
+| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"cert_expired"` (live TLS certificate has expired), `"cert_expiring_soon:<N>d"` (certificate expires within 30 days), `"cert_self_signed"` (certificate issuer matches subject — self-signed), `"cors_wildcard_credentials"` (CORS allows all origins with credentials — credential theft risk), `"cookies_missing_secure"` (at least one cookie missing the Secure flag — sent over HTTP), `"cookies_missing_httponly"` (at least one cookie missing HttpOnly — accessible via JavaScript), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`), `"sans_new_subdomains"` (host's TLS certificate SANs contain FQDNs not present in the store — potential undiscovered subdomains worth investigating). |
 | `takeover_candidate` | bool | `true` if any `takeover:*` or `ns_takeover_risk:*` flag was set. Quick filter for high-priority findings. |
 | `notes` | string or null | Free-text field for additional context. |
 
@@ -116,7 +117,7 @@ Each flag is assigned a severity level. The host's `analysis.severity` field ref
 | **critical** | `takeover:*`, `ns_takeover_risk:*`, `domain_expired`, `cert_expired`, `domain_status:pendingDelete`, `domain_status:redemptionPeriod` |
 | **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `cert_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external` |
 | **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `cert_self_signed`, `cors_wildcard_credentials`, `domain_status:pendingTransfer` |
-| **low** | `no_dnssec`, `cookies_missing_secure`, `cookies_missing_httponly`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns` |
+| **low** | `no_dnssec`, `cookies_missing_secure`, `cookies_missing_httponly`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns`, `sans_new_subdomains` |
 
 ### rdap (RdapInfo)
 
@@ -353,6 +354,11 @@ rpq | jq -r '.tls.sans[]?' | sort -u
 rpq | jq 'select(.tls.issuer_org? // "" | test("Let.s Encrypt"; "i"))'
 ```
 
+**Hosts with TLS SANs containing undiscovered subdomains:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "sans_new_subdomains"))'
+```
+
 ### DNS-specific queries
 
 **All hosts with a CNAME chain (not resolving directly):**
@@ -425,6 +431,16 @@ rpq | jq 'select([.dns.resolved_ips[]?] | any(.is_private == true))'
 **IPv6-only hosts:**
 ```bash
 rpq | jq 'select(.dns != null and (.dns.aaaa | length > 0) and (.dns.a | length == 0))'
+```
+
+**IPs with reverse DNS (PTR) records:**
+```bash
+rpq | jq -r '[.dns.resolved_ips[]? | select(.ptr != null) | "\(.ip) \(.ptr)"] | .[]'
+```
+
+**All unique PTR hostnames across the store:**
+```bash
+rpq | jq -r '.dns.resolved_ips[]?.ptr // empty' | sort -u
 ```
 
 ### Analysis and flag queries

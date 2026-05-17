@@ -12,6 +12,7 @@ class ResolvedIp:
     asn: int | None = None
     asn_org: str | None = None
     country: str | None = None
+    ptr: str | None = None
 
 
 @dataclass
