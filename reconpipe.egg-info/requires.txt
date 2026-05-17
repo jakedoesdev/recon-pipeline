@@ -3,6 +3,7 @@ dnspython>=2.4
 httpx>=0.25
 tldextract>=5.0
 tenacity>=8.2
+cryptography>=41.0
 maxminddb>=2.4
 pyyaml>=6.0
 

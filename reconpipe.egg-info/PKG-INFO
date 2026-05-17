@@ -8,6 +8,7 @@ Requires-Dist: dnspython>=2.4
 Requires-Dist: httpx>=0.25
 Requires-Dist: tldextract>=5.0
 Requires-Dist: tenacity>=8.2
+Requires-Dist: cryptography>=41.0
 Requires-Dist: maxminddb>=2.4
 Requires-Dist: pyyaml>=6.0
 Provides-Extra: dev

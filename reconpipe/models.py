@@ -34,9 +34,26 @@ class HeaderInfo:
     status_code: int = 0
     present: dict[str, str] = field(default_factory=dict)
     missing: list[str] = field(default_factory=list)
+    page_title: str | None = None
+    meta_generator: str | None = None
+    technologies: list[str] = field(default_factory=list)
+    cookies: list[dict] = field(default_factory=list)
     source: str = "native"
     grade: str | None = None
     checked_at: str = ""
+
+
+@dataclass
+class TlsInfo:
+    subject: str | None = None
+    issuer: str | None = None
+    issuer_org: str | None = None
+    not_before: str | None = None
+    not_after: str | None = None
+    serial: str | None = None
+    sans: list[str] = field(default_factory=list)
+    self_signed: bool = False
+    queried_at: str = ""
 
 
 @dataclass
@@ -77,6 +94,7 @@ class Host:
     scope: ScopeInfo | None = None
     analysis: AnalysisInfo | None = None
     rdap: RdapInfo | None = None
+    tls: TlsInfo | None = None
 
 
 def _now_iso() -> str:

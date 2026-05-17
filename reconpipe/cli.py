@@ -78,7 +78,7 @@ def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_pa
 
     if bbot:
         try:
-            bbot_results = run_bbot(domains, preset=bbot_preset, extra_args=bbot_args, silent=bbot_silent)
+            bbot_results = run_bbot(domains, preset=bbot_preset, extra_args=bbot_args, silent=bbot_silent, store_path=Path(output_path))
             click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
             for fqdn, source in bbot_results:
                 ext = tldextract.extract(fqdn)
@@ -187,6 +187,20 @@ def rdap(input_path):
 
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
+@click.option("--port", default=443, type=int, help="TLS port to connect to")
+def tls(input_path, port):
+    """Collect live TLS certificate details."""
+    from .tls import run_tls
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    run_tls(store_path=Path(input_path), port=port)
+
+
+@cli.command()
+@click.option("-i", "--input", "input_path", required=True)
 @click.option("--expected-country", default=None)
 @click.option("--takeover-fingerprints", default=None)
 @click.option("--enrich-online/--no-enrich-online", default=False)
@@ -226,12 +240,13 @@ def pipeline(
     resolvers, concurrency, scheme, allow, deny,
     rdap, expected_country, enrich_online,
 ):
-    """Run full pipeline: enum → resolve → headers → scope → analyze."""
+    """Run full pipeline: enum → resolve → headers → tls → rdap → scope → analyze."""
     from .analyze import run_analyze
     from .headers import run_headers
     from .rdap import run_rdap
     from .resolve import run_resolve
     from .scope import run_scope
+    from .tls import run_tls
 
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
@@ -260,7 +275,7 @@ def pipeline(
 
     if bbot:
         try:
-            bbot_results = run_bbot(domains, preset=bbot_preset, silent=bbot_silent)
+            bbot_results = run_bbot(domains, preset=bbot_preset, silent=bbot_silent, store_path=store)
             click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
             for fqdn, source in bbot_results:
                 import tldextract
@@ -287,21 +302,25 @@ def pipeline(
     click.echo("━━━ Phase: headers ━━━", err=True)
     run_headers(store_path=store, scheme=scheme)
 
-    # 4. RDAP
+    # 4. TLS
+    click.echo("━━━ Phase: tls ━━━", err=True)
+    run_tls(store_path=store)
+
+    # 5. RDAP
     if rdap:
         click.echo("━━━ Phase: rdap ━━━", err=True)
         run_rdap(store_path=store)
     else:
         click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
 
-    # 5. Scope
+    # 6. Scope
     if allow or deny:
         click.echo("━━━ Phase: scope ━━━", err=True)
         run_scope(store_path=store, allow_path=allow, deny_path=deny)
     else:
         click.echo("━━━ Phase: scope (skipped — no allow/deny files) ━━━", err=True)
 
-    # 6. Analyze
+    # 7. Analyze
     click.echo("━━━ Phase: analyze ━━━", err=True)
     run_analyze(
         store_path=store,

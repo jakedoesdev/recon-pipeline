@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -128,6 +129,7 @@ def run_bbot(
     preset: str = "reconpipe-quiet",
     extra_args: str | None = None,
     silent: bool = False,
+    store_path: Path | None = None,
 ) -> list[tuple[str, str]]:
     """
     Run BBOT against targets with the given preset.
@@ -135,6 +137,9 @@ def run_bbot(
 
     When silent=False (default), BBOT streams to the terminal and stdin
     is connected so the user can type interactive commands (e.g. "kill <module>").
+
+    If store_path is provided, raw BBOT output is copied to a bbot_out/
+    directory alongside the store file.
     """
     preset_value = BUILTIN_PRESETS.get(preset, preset)
 
@@ -186,6 +191,10 @@ def run_bbot(
         except subprocess.TimeoutExpired:
             raise BbotError("BBOT timed out after 1 hour")
 
+        # Preserve raw BBOT output before tmpdir cleanup
+        if store_path:
+            _save_bbot_output(output_dir, store_path)
+
         output_json = _find_output_json(output_dir)
         if output_json:
             logger.info("Parsing BBOT output.json: %s", output_json)
@@ -200,3 +209,11 @@ def run_bbot(
         if result.stderr:
             logger.debug("BBOT stderr: %s", result.stderr[:1000])
         return []
+
+
+def _save_bbot_output(output_dir: Path, store_path: Path) -> None:
+    dest = store_path.parent / "bbot_out"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(output_dir, dest)
+    logger.info("BBOT output saved to %s", dest)

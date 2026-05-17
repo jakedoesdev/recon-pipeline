@@ -75,7 +75,7 @@ Download from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-
 rp pipeline -i domains.txt -o store.jsonl --allow scope-allow.txt --deny scope-deny.txt
 ```
 
-This runs all phases in sequence: enum → resolve → headers → rdap → scope → analyze.
+This runs all phases in sequence: enum → resolve → headers → tls → rdap → scope → analyze.
 
 ### Individual commands
 
@@ -123,7 +123,16 @@ rp headers -i store.jsonl --expected headers.txt         # custom expected heade
 
 Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers.
 
-#### 4. RDAP registration lookup
+#### 4. TLS certificate collection
+
+```bash
+rp tls -i store.jsonl
+rp tls -i store.jsonl --port 8443                       # non-standard TLS port
+```
+
+Connects to each resolved host via TLS and extracts the live certificate: subject, issuer, validity dates, serial number, SANs, and self-signed status. SANs can reveal additional domains not found during enumeration. Requires the `cryptography` package.
+
+#### 5. RDAP registration lookup
 
 ```bash
 rp rdap -i store.jsonl
@@ -131,7 +140,7 @@ rp rdap -i store.jsonl
 
 Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skip with `rp pipeline --no-rdap`.
 
-#### 5. Scope tagging
+#### 6. Scope tagging
 
 ```bash
 rp scope -i store.jsonl --allow allow.txt --deny deny.txt
@@ -152,7 +161,7 @@ api.example.com
 re:.*\.dev\.example\.com
 ```
 
-#### 6. Analyze
+#### 7. Analyze
 
 ```bash
 rp analyze -i store.jsonl
@@ -171,11 +180,14 @@ Detects:
 - Dangling MX records (mail server hostname is NXDOMAIN)
 - Domain expiration warnings (RDAP: expiring within 60 days, expired, risky statuses)
 - Missing DNSSEC delegation signing
+- Expired or expiring TLS certificates, self-signed certs
+- CORS misconfigurations (wildcard origin with credentials)
+- Cookie security (missing Secure, HttpOnly flags)
 - HTTP status code anomalies and version disclosure in headers
 
 Each flag is assigned a severity rating (critical, high, medium, low). The host's overall severity reflects its highest-severity flag for easy filtering.
 
-#### 7. Report
+#### 8. Report
 
 ```bash
 rp report -i store.jsonl --view combined                 # full JSONL (default)
@@ -191,7 +203,7 @@ rp report -i store.jsonl --flagged-only                  # only hosts with analy
 rp report -i store.jsonl --view subs -o subs.txt         # write to file
 ```
 
-#### 8. Diff
+#### 9. Diff
 
 ```bash
 rp diff --old scan1.jsonl --new scan2.jsonl
@@ -211,16 +223,17 @@ Compares two snapshots and reports:
 | Module | File | Purpose |
 |--------|------|---------|
 | CLI | `reconpipe/cli.py` | Click command group, argument parsing, pipeline orchestration |
-| Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, ScopeInfo, AnalysisInfo, RdapInfo, ResolvedIp |
+| Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, TlsInfo, ScopeInfo, AnalysisInfo, RdapInfo, ResolvedIp |
 | Store | `reconpipe/store.py` | JSONL read/write with merge-on-FQDN (unions discovery_sources, preserves phase data) |
 | Config | `reconpipe/config.py` | Loads `config.toml` and `keys.toml`, resolves env var overrides |
 | crt.sh | `reconpipe/enum/crtsh.py` | Certificate Transparency log queries with retry/backoff |
 | BBOT | `reconpipe/enum/bbot.py` | Subprocess wrapper for BBOT, parses JSON output, passes secrets |
 | Resolve | `reconpipe/resolve.py` | Async DNS (dnspython), CNAME walking, wildcard detection, MaxMind enrichment |
-| Headers | `reconpipe/headers.py` | Security header checks (native httpx) |
+| Headers | `reconpipe/headers.py` | Security header checks, page title/technology detection, cookie analysis |
+| TLS | `reconpipe/tls.py` | Live TLS certificate collection (subject, issuer, SANs, expiry) |
 | RDAP | `reconpipe/rdap.py` | RDAP registration lookups per apex (registrar, expiry, status, DNSSEC) |
 | Scope | `reconpipe/scope.py` | Three-state classification with exact/wildcard/regex pattern matching |
-| Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, geo checks, RDAP flags |
+| Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, TLS/CORS/cookie checks, severity ratings |
 | Fingerprints | `reconpipe/fingerprints.py` | 17 subdomain takeover fingerprints (S3, Azure, GitHub Pages, etc.) |
 | Report | `reconpipe/report.py` | Output views: subs, ips, subs-ips, headers, combined (JSONL/JSON/CSV) |
 | Diff | `reconpipe/diff.py` | Structured snapshot comparison (added/removed/changed) |
@@ -244,11 +257,23 @@ All data lives in a single JSONL file (one JSON object per line, keyed by FQDN).
   },
   "headers": {
     "status_code": 200,
-    "server": "cloudflare",
+    "present": {"strict-transport-security": "max-age=31536000", "x-frame-options": "DENY", "server": "cloudflare"},
     "missing": ["Content-Security-Policy", "Permissions-Policy"],
-    "present": {"X-Frame-Options": "DENY", "Strict-Transport-Security": "max-age=31536000"},
-    "grade": null,
+    "page_title": "App Dashboard",
+    "meta_generator": null,
+    "technologies": [],
+    "cookies": [{"name": "session", "secure": true, "httponly": true, "samesite": "Strict"}],
     "source": "native"
+  },
+  "tls": {
+    "subject": "*.example.com",
+    "issuer": "R11",
+    "issuer_org": "Let's Encrypt",
+    "not_before": "2026-04-01T00:00:00",
+    "not_after": "2026-06-30T00:00:00",
+    "serial": "04a3b5c7d9e1f2",
+    "sans": ["*.example.com", "example.com"],
+    "self_signed": false
   },
   "scope": {
     "status": "in",

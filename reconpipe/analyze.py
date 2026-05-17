@@ -342,6 +342,12 @@ _FLAG_SEVERITY: dict[str, str] = {
     "geo_mismatch": "medium",
     "multiple_apex_owners": "medium",
     "unexpected_asn": "medium",
+    "cert_expired": "critical",
+    "cert_expiring_soon": "high",
+    "cert_self_signed": "medium",
+    "cors_wildcard_credentials": "medium",
+    "cookies_missing_secure": "low",
+    "cookies_missing_httponly": "low",
     "no_dnssec": "low",
     "version_disclosed": "low",
     "http_server_error": "low",
@@ -413,6 +419,53 @@ def _check_rdap(host: Host) -> list[str]:
     return flags
 
 
+_CERT_EXPIRY_WARN_DAYS = 30
+
+
+def _check_tls(host: Host) -> list[str]:
+    if not host.tls:
+        return []
+    flags = []
+    if host.tls.self_signed:
+        flags.append("cert_self_signed")
+    if host.tls.not_after:
+        try:
+            exp_str = host.tls.not_after.replace("Z", "+00:00")
+            exp = datetime.fromisoformat(exp_str)
+            now = datetime.now(timezone.utc)
+            days_left = (exp - now).days
+            if days_left <= 0:
+                flags.append("cert_expired")
+            elif days_left <= _CERT_EXPIRY_WARN_DAYS:
+                flags.append(f"cert_expiring_soon:{days_left}d")
+        except (ValueError, TypeError):
+            pass
+    return flags
+
+
+def _check_cors(host: Host) -> list[str]:
+    if not host.headers or not host.headers.present:
+        return []
+    origin = host.headers.present.get("access-control-allow-origin", "")
+    creds = host.headers.present.get("access-control-allow-credentials", "").lower()
+    if origin == "*" and creds == "true":
+        return ["cors_wildcard_credentials"]
+    return []
+
+
+def _check_cookies(host: Host) -> list[str]:
+    if not host.headers or not host.headers.cookies:
+        return []
+    flags = []
+    has_insecure = any(not c.get("secure") for c in host.headers.cookies)
+    has_no_httponly = any(not c.get("httponly") for c in host.headers.cookies)
+    if has_insecure:
+        flags.append("cookies_missing_secure")
+    if has_no_httponly:
+        flags.append("cookies_missing_httponly")
+    return flags
+
+
 def run_analyze(
     store_path: Path,
     expected_country: str | None = None,
@@ -440,6 +493,9 @@ def run_analyze(
     ns_takeover_count = 0
     mx_dangling_count = 0
     rdap_count = 0
+    tls_count = 0
+    cors_count = 0
+    cookie_count = 0
 
     for host in hosts.values():
         if not host.analysis:
@@ -508,6 +564,21 @@ def run_analyze(
             existing_flags.add(rf)
             rdap_count += 1
 
+        # TLS certificate flags
+        for tf in _check_tls(host):
+            existing_flags.add(tf)
+            tls_count += 1
+
+        # CORS misconfiguration
+        for cf in _check_cors(host):
+            existing_flags.add(cf)
+            cors_count += 1
+
+        # Cookie security
+        for ck in _check_cookies(host):
+            existing_flags.add(ck)
+            cookie_count += 1
+
         # HTTP status code flags
         for sf in _check_status_code(host):
             existing_flags.add(sf)
@@ -525,10 +596,11 @@ def run_analyze(
 
     flagged_total = sum(1 for h in hosts.values() if h.analysis and h.analysis.flags)
     logger.info(
-        "Analysis complete: %d takeover candidates, %d stale CNAMEs, %d geo mismatches, "
-        "%d private IPs, %d SPF permissive, %d NS takeover risks, %d dangling MX, "
-        "%d RDAP flags, %d status flags, %d version disclosures, %d total hosts flagged",
+        "Analysis complete: %d takeover, %d stale CNAMEs, %d geo, %d private IPs, "
+        "%d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, %d CORS, "
+        "%d cookie, %d status, %d version, %d total flagged",
         takeover_count, stale_count, geo_count, private_count,
         spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
+        tls_count, cors_count, cookie_count,
         status_count, version_count, flagged_total,
     )

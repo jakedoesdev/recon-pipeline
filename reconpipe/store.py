@@ -12,6 +12,7 @@ from .models import (
     RdapInfo,
     ResolvedIp,
     ScopeInfo,
+    TlsInfo,
     _now_iso,
 )
 
@@ -50,6 +51,10 @@ def _rebuild_host(raw: dict) -> Host:
     if raw.get("rdap"):
         rdap = RdapInfo(**raw["rdap"])
 
+    tls = None
+    if raw.get("tls"):
+        tls = TlsInfo(**raw["tls"])
+
     return Host(
         fqdn=raw["fqdn"],
         apex=raw["apex"],
@@ -61,6 +66,7 @@ def _rebuild_host(raw: dict) -> Host:
         scope=scope,
         analysis=analysis,
         rdap=rdap,
+        tls=tls,
     )
 
 
@@ -112,6 +118,8 @@ def merge_host(existing: Host, incoming: Host) -> Host:
         existing.analysis = incoming.analysis
     if incoming.rdap is not None:
         existing.rdap = incoming.rdap
+    if incoming.tls is not None:
+        existing.tls = incoming.tls
 
     return existing
 

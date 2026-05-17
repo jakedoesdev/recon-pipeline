@@ -17,6 +17,7 @@ Each line in the `.jsonl` store is a **Host** record with the following top-leve
 | `headers` | object or null | HTTP security header data. Null if `rp headers` hasn't been run yet. |
 | `scope` | object or null | Scope classification. Null if `rp scope` hasn't been run yet. |
 | `analysis` | object or null | Anomaly detection results. Null if `rp analyze` hasn't been run yet. |
+| `tls` | object or null | Live TLS certificate data. Null if `rp tls` hasn't been run yet. |
 | `rdap` | object or null | RDAP registration data for the host's apex domain. Null if `rp rdap` hasn't been run yet. Shared across all hosts under the same apex. |
 
 ### dns (DnsInfo)
@@ -59,11 +60,31 @@ Populated by `rp headers`. Contains the results of HTTP security header probing.
 |---|---|---|
 | `url_checked` | string | The actual URL that was probed. This may differ from the FQDN if the request followed redirects or CNAME resolution landed on a different site. **Important:** If this doesn't match the FQDN, the header data (status code, present/missing headers) describes the destination site, not the original subdomain. Always compare this field against the FQDN to catch mismatches. |
 | `status_code` | int | HTTP status code returned (e.g. `200`, `301`, `403`). |
-| `present` | dict | Security headers and informational headers found in the response, as `{header_name: header_value}` pairs. Includes expected security headers, `server`, `x-powered-by`, and all `X-` prefixed headers from the response. |
+| `present` | dict | Security headers and informational headers found in the response, as `{header_name: header_value}` pairs. Includes expected security headers, `server`, `x-powered-by`, CORS headers (`access-control-allow-origin`, `access-control-allow-credentials`), and all `X-` prefixed headers from the response. |
 | `missing` | list | Security headers that were expected but not found (e.g. `["Strict-Transport-Security", "X-Content-Type-Options"]`). Checked against a default or user-provided expected-headers list. |
-| `source` | string | How the check was performed: `"native"` (direct HTTP request) or `"securityheaders"` (via securityheaders.com API). |
-| `grade` | string or null | Security grade if available (from securityheaders.com). Null for native checks. |
+| `page_title` | string or null | The content of the `<title>` tag from the HTML response body. Quick identification of what's running (e.g. `"Welcome to nginx!"`, `"Confluence"`, `"GitLab"`). Null if no title tag found or the page returned no body. |
+| `meta_generator` | string or null | The `<meta name="generator">` content, which CMS and frameworks typically set (e.g. `"WordPress 6.4"`, `"Drupal 10"`, `"Hugo 0.121.0"`). Null if not present. |
+| `technologies` | list | Technologies detected in the response body via pattern matching. Detects: WordPress, Drupal, Joomla, Next.js, Nuxt.js, Angular, React, Shopify, Squarespace, Wix, Confluence, Jira, GitLab, Grafana, Jenkins, Kibana, phpMyAdmin, nginx, Apache Tomcat, IIS, Laravel, Gatsby, HubSpot. |
+| `cookies` | list | Cookies set by the response, with security attribute analysis. Each entry is `{"name": "session_id", "secure": true, "httponly": true, "samesite": "Strict"}`. Missing attributes are flagged by analyze. |
+| `source` | string | Always `"native"` (direct HTTP request). |
+| `grade` | string or null | Reserved for future use. |
 | `checked_at` | string | ISO 8601 timestamp of the header check. |
+
+### tls (TlsInfo)
+
+Populated by `rp tls`. Contains the live TLS certificate served by the host.
+
+| Field | Type | Description |
+|---|---|---|
+| `subject` | string or null | Certificate subject Common Name (CN). Usually the domain the cert was issued for. |
+| `issuer` | string or null | Certificate issuer Common Name (e.g. `"R11"` for Let's Encrypt, `"DigiCert Global G2"`). |
+| `issuer_org` | string or null | Certificate issuer Organization (e.g. `"Let's Encrypt"`, `"DigiCert Inc"`). Useful for identifying who issued the cert. |
+| `not_before` | string or null | ISO 8601 timestamp of when the certificate became valid. |
+| `not_after` | string or null | ISO 8601 timestamp of when the certificate expires. Expiring/expired certs are flagged by analyze. |
+| `serial` | string or null | Certificate serial number in hex. Useful for tracking specific certificates. |
+| `sans` | list | Subject Alternative Names — all domain names the certificate covers. Can reveal additional subdomains or related domains not discovered during enumeration. |
+| `self_signed` | bool | `true` if the certificate issuer matches the subject (self-signed). Flagged by analyze. |
+| `queried_at` | string | ISO 8601 timestamp of the TLS handshake. |
 
 ### scope (ScopeInfo)
 
@@ -82,7 +103,7 @@ Populated by `rp analyze`. Contains automated anomaly detection results.
 | Field | Type | Description |
 |---|---|---|
 | `severity` | string or null | Highest severity across all flags for this host: `"critical"`, `"high"`, `"medium"`, or `"low"`. Null if no flags are set. Severity is computed automatically from the flag types (see severity table below). |
-| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
+| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"cert_expired"` (live TLS certificate has expired), `"cert_expiring_soon:<N>d"` (certificate expires within 30 days), `"cert_self_signed"` (certificate issuer matches subject — self-signed), `"cors_wildcard_credentials"` (CORS allows all origins with credentials — credential theft risk), `"cookies_missing_secure"` (at least one cookie missing the Secure flag — sent over HTTP), `"cookies_missing_httponly"` (at least one cookie missing HttpOnly — accessible via JavaScript), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
 | `takeover_candidate` | bool | `true` if any `takeover:*` or `ns_takeover_risk:*` flag was set. Quick filter for high-priority findings. |
 | `notes` | string or null | Free-text field for additional context. |
 
@@ -92,10 +113,10 @@ Each flag is assigned a severity level. The host's `analysis.severity` field ref
 
 | Severity | Flags |
 |---|---|
-| **critical** | `takeover:*`, `ns_takeover_risk:*`, `domain_expired`, `domain_status:pendingDelete`, `domain_status:redemptionPeriod` |
-| **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external` |
-| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `domain_status:pendingTransfer` |
-| **low** | `no_dnssec`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns` |
+| **critical** | `takeover:*`, `ns_takeover_risk:*`, `domain_expired`, `cert_expired`, `domain_status:pendingDelete`, `domain_status:redemptionPeriod` |
+| **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `cert_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external` |
+| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `cert_self_signed`, `cors_wildcard_credentials`, `domain_status:pendingTransfer` |
+| **low** | `no_dnssec`, `cookies_missing_secure`, `cookies_missing_httponly`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns` |
 
 ### rdap (RdapInfo)
 
@@ -257,6 +278,79 @@ rpq | jq 'select([.analysis.flags[]?] | any(test("http_server_error")))'
 **Hosts requiring authentication:**
 ```bash
 rpq | jq 'select([.analysis.flags[]?] | any(test("http_auth_required")))'
+```
+
+### Page title and technology queries
+
+**Hosts with a specific page title:**
+```bash
+rpq | jq 'select(.headers.page_title? // "" | test("Jenkins"; "i"))'
+rpq | jq 'select(.headers.page_title? // "" | test("login|sign in"; "i"))'
+```
+
+**Hosts where a specific technology was detected:**
+```bash
+rpq | jq 'select([.headers.technologies[]?] | any(. == "WordPress"))'
+rpq | jq 'select([.headers.technologies[]?] | any(. == "Jenkins"))'
+```
+
+**List all detected technologies across the store:**
+```bash
+rpq | jq -r '.headers.technologies[]?' | sort | uniq -c | sort -rn
+```
+
+**Hosts with a meta generator tag:**
+```bash
+rpq | jq 'select(.headers.meta_generator != null) | {fqdn, generator: .headers.meta_generator}'
+```
+
+### Cookie and CORS queries
+
+**Hosts setting cookies without Secure flag:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "cookies_missing_secure"))'
+```
+
+**Hosts with CORS wildcard + credentials:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "cors_wildcard_credentials"))'
+```
+
+**List all cookies and their security attributes:**
+```bash
+rpq | jq 'select(.headers.cookies | length > 0) | {fqdn, cookies: .headers.cookies}'
+```
+
+### TLS certificate queries
+
+**Hosts with expired certificates:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("cert_expired")))'
+```
+
+**Hosts with self-signed certificates:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "cert_self_signed"))'
+```
+
+**Certificates expiring soon:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("cert_expiring_soon")))'
+```
+
+**Hosts by certificate issuer:**
+```bash
+rpq | jq -r 'select(.tls != null) | .tls.issuer_org // "unknown"' | sort | uniq -c | sort -rn
+```
+
+**Find additional domains from certificate SANs:**
+```bash
+rpq | jq -r '.tls.sans[]?' | sort -u
+```
+
+**Certificates issued by a specific CA:**
+```bash
+rpq | jq 'select(.tls.issuer_org? // "" | test("Let.s Encrypt"; "i"))'
 ```
 
 ### DNS-specific queries

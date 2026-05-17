@@ -20,6 +20,8 @@ TRACKED_FIELDS = [
     "rdap.registrar",
     "rdap.expires_at",
     "rdap.statuses",
+    "tls.not_after",
+    "tls.issuer",
 ]
 
 
