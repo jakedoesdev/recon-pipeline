@@ -5,6 +5,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+import dns.resolver
+import dns.exception
 import httpx
 
 from .config import get_key
@@ -91,6 +93,69 @@ def _check_private_ip_external(host: Host) -> bool:
         return False
     return any(rip.is_private for rip in host.dns.resolved_ips)
 
+
+
+_NS_TAKEOVER_PATTERNS: list[str] = [
+    ".digitalocean.com",
+    ".cloudflare.com",
+    ".nsone.net",
+    ".dnsimple.com",
+    ".dnsmadeeasy.com",
+    ".no-ip.com",
+    ".freedns.afraid.org",
+    ".he.net",
+    ".linode.com",
+    ".vultr.com",
+    ".registrar-servers.com",
+]
+
+
+def _check_spf_permissive(host: Host) -> bool:
+    if not host.dns or not host.dns.txt:
+        return False
+    for txt in host.dns.txt:
+        lower = txt.lower()
+        if "v=spf1" in lower and ("+all" in lower or "?all" in lower):
+            return True
+    return False
+
+
+def _check_ns_takeover(host: Host) -> list[str]:
+    if not host.dns or not host.dns.ns:
+        return []
+    flags = []
+    for ns in host.dns.ns:
+        ns_lower = ns.lower().rstrip(".")
+        for pattern in _NS_TAKEOVER_PATTERNS:
+            if ns_lower.endswith(pattern):
+                try:
+                    dns.resolver.resolve(ns_lower, "A")
+                except dns.resolver.NXDOMAIN:
+                    flags.append(f"ns_takeover_risk:{ns_lower}")
+                except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
+                        dns.exception.Timeout, Exception):
+                    pass
+                break
+    return flags
+
+
+def _check_mx_dangling(host: Host) -> list[str]:
+    if not host.dns or not host.dns.mx:
+        return []
+    flags = []
+    for mx_entry in host.dns.mx:
+        parts = mx_entry.split()
+        mx_host = parts[-1].rstrip(".").lower() if parts else ""
+        if not mx_host:
+            continue
+        try:
+            dns.resolver.resolve(mx_host, "A")
+        except dns.resolver.NXDOMAIN:
+            flags.append(f"mx_dangling:{mx_host}")
+        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
+                dns.exception.Timeout, Exception):
+            pass
+    return flags
 
 
 _STATUS_CATEGORIES: dict[str, list[int]] = {
@@ -218,6 +283,9 @@ def run_analyze(
     private_count = 0
     status_count = 0
     version_count = 0
+    spf_count = 0
+    ns_takeover_count = 0
+    mx_dangling_count = 0
 
     for host in hosts.values():
         if not host.analysis:
@@ -257,6 +325,22 @@ def run_analyze(
         if host.apex in multi_apex:
             existing_flags.add("multiple_apex_owners")
 
+        # SPF misconfiguration
+        if _check_spf_permissive(host):
+            existing_flags.add("spf_permissive")
+            spf_count += 1
+
+        # NS delegation takeover risk
+        for nf in _check_ns_takeover(host):
+            existing_flags.add(nf)
+            host.analysis.takeover_candidate = True
+            ns_takeover_count += 1
+
+        # Dangling MX
+        for mf in _check_mx_dangling(host):
+            existing_flags.add(mf)
+            mx_dangling_count += 1
+
         # HTTP status code flags
         for sf in _check_status_code(host):
             existing_flags.add(sf)
@@ -274,7 +358,9 @@ def run_analyze(
     flagged_total = sum(1 for h in hosts.values() if h.analysis and h.analysis.flags)
     logger.info(
         "Analysis complete: %d takeover candidates, %d stale CNAMEs, %d geo mismatches, "
-        "%d private IPs, %d status flags, %d version disclosures, %d total hosts flagged",
+        "%d private IPs, %d SPF permissive, %d NS takeover risks, %d dangling MX, "
+        "%d status flags, %d version disclosures, %d total hosts flagged",
         takeover_count, stale_count, geo_count, private_count,
+        spf_count, ns_takeover_count, mx_dangling_count,
         status_count, version_count, flagged_total,
     )

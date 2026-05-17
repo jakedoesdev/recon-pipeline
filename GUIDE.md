@@ -80,8 +80,8 @@ Populated by `rp analyze`. Contains automated anomaly detection results.
 
 | Field | Type | Description |
 |---|---|---|
-| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 3+ distinct ASNs), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
-| `takeover_candidate` | bool | `true` if any `takeover:*` flag was set. Quick filter for high-priority findings. |
+| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 3+ distinct ASNs), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
+| `takeover_candidate` | bool | `true` if any `takeover:*` or `ns_takeover_risk:*` flag was set. Quick filter for high-priority findings. |
 | `notes` | string or null | Free-text field for additional context. |
 
 ---
@@ -331,6 +331,21 @@ rpq | jq 'select(.analysis.flags | length > 0)'
 **Geo-mismatch hosts:**
 ```bash
 rpq | jq 'select([.analysis.flags[]?] | any(test("geo_mismatch")))'
+```
+
+**SPF permissive (spoofable mail domains):**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "spf_permissive"))'
+```
+
+**NS delegation takeover risks:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("ns_takeover_risk")))'
+```
+
+**Dangling MX records:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("mx_dangling")))'
 ```
 
 ### Scope queries
