@@ -17,6 +17,9 @@ TRACKED_FIELDS = [
     "scope.status",
     "analysis.flags",
     "discovery_sources",
+    "rdap.registrar",
+    "rdap.expires_at",
+    "rdap.statuses",
 ]
 
 

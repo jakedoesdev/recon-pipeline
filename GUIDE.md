@@ -17,6 +17,7 @@ Each line in the `.jsonl` store is a **Host** record with the following top-leve
 | `headers` | object or null | HTTP security header data. Null if `rp headers` hasn't been run yet. |
 | `scope` | object or null | Scope classification. Null if `rp scope` hasn't been run yet. |
 | `analysis` | object or null | Anomaly detection results. Null if `rp analyze` hasn't been run yet. |
+| `rdap` | object or null | RDAP registration data for the host's apex domain. Null if `rp rdap` hasn't been run yet. Shared across all hosts under the same apex. |
 
 ### dns (DnsInfo)
 
@@ -80,9 +81,35 @@ Populated by `rp analyze`. Contains automated anomaly detection results.
 
 | Field | Type | Description |
 |---|---|---|
-| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 3+ distinct ASNs), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
+| `severity` | string or null | Highest severity across all flags for this host: `"critical"`, `"high"`, `"medium"`, or `"low"`. Null if no flags are set. Severity is computed automatically from the flag types (see severity table below). |
+| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`). |
 | `takeover_candidate` | bool | `true` if any `takeover:*` or `ns_takeover_risk:*` flag was set. Quick filter for high-priority findings. |
 | `notes` | string or null | Free-text field for additional context. |
+
+### Flag severity ratings
+
+Each flag is assigned a severity level. The host's `analysis.severity` field reflects the highest severity among its flags.
+
+| Severity | Flags |
+|---|---|
+| **critical** | `takeover:*`, `ns_takeover_risk:*`, `domain_expired`, `domain_status:pendingDelete`, `domain_status:redemptionPeriod` |
+| **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external` |
+| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `domain_status:pendingTransfer` |
+| **low** | `no_dnssec`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns` |
+
+### rdap (RdapInfo)
+
+Populated by `rp rdap`. Contains RDAP registration data queried once per apex domain and shared across all hosts under that apex.
+
+| Field | Type | Description |
+|---|---|---|
+| `registrar` | string or null | The domain registrar (e.g. `"Cloudflare, Inc."`, `"GoDaddy.com, LLC"`). Useful for correlating infrastructure ownership. |
+| `registered_at` | string or null | ISO 8601 timestamp of when the domain was first registered. |
+| `expires_at` | string or null | ISO 8601 timestamp of when the domain registration expires. Domains expiring soon are flagged by analyze. |
+| `statuses` | list | ICANN domain status codes (e.g. `["clientTransferProhibited", "clientDeleteProhibited"]`). Statuses like `pendingDelete`, `redemptionPeriod`, `serverHold`, or `clientHold` indicate domains in risky transition states. |
+| `nameservers` | list | Nameservers registered with the registry (as opposed to what DNS resolves). Differences between these and `dns.ns` can indicate stale delegation. |
+| `dnssec` | bool or null | Whether DNSSEC delegation signing is active. `false` means the domain is not DNSSEC-signed. `null` if the RDAP response didn't include this field. |
+| `queried_at` | string | ISO 8601 timestamp of when the RDAP lookup was performed. |
 
 ---
 
@@ -308,6 +335,24 @@ rpq | jq 'select(.dns != null and (.dns.aaaa | length > 0) and (.dns.a | length 
 
 ### Analysis and flag queries
 
+**Hosts by severity level:**
+```bash
+# All critical findings
+rpq | jq 'select(.analysis.severity == "critical")'
+
+# Critical and high findings
+rpq | jq 'select(.analysis.severity == "critical" or .analysis.severity == "high")'
+
+# Medium and above
+rpq | jq 'select(.analysis.severity != null and .analysis.severity != "low")'
+
+# Count hosts per severity
+rpq | jq -r '.analysis.severity // "none"' | sort | uniq -c | sort -rn
+
+# Summary table: fqdn, severity, flags
+rpq | jq 'select(.analysis.severity != null) | {fqdn, severity: .analysis.severity, flags: .analysis.flags}'
+```
+
 **Subdomain takeover candidates:**
 ```bash
 rpq | jq 'select(.analysis.takeover_candidate == true)'
@@ -346,6 +391,48 @@ rpq | jq 'select([.analysis.flags[]?] | any(test("ns_takeover_risk")))'
 **Dangling MX records:**
 ```bash
 rpq | jq 'select([.analysis.flags[]?] | any(test("mx_dangling")))'
+```
+
+**Hosts on an unexpected ASN (outlier within their apex):**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("unexpected_asn")))'
+```
+
+**Domains expiring soon or expired:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("domain_expir")))'
+```
+
+**Domains with risky ICANN statuses (pendingDelete, serverHold, etc.):**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(test("domain_status")))'
+```
+
+**Domains without DNSSEC:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "no_dnssec"))'
+```
+
+### RDAP queries
+
+**Hosts with RDAP data:**
+```bash
+rpq | jq 'select(.rdap != null)'
+```
+
+**Domains by registrar:**
+```bash
+rpq | jq -r 'select(.rdap != null) | .rdap.registrar // "unknown"' | sort | uniq -c | sort -rn
+```
+
+**Domains expiring within 90 days (raw RDAP field):**
+```bash
+rpq | jq 'select(.rdap.expires_at != null) | {fqdn, apex, expires: .rdap.expires_at}'
+```
+
+**Compare RDAP nameservers vs DNS NS records:**
+```bash
+rpq | jq 'select(.rdap != null and .dns.ns != null and (.dns.ns | length > 0)) | {fqdn, dns_ns: .dns.ns, rdap_ns: .rdap.nameservers}'
 ```
 
 ### Scope queries

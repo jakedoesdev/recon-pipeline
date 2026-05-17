@@ -75,7 +75,7 @@ Download from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-
 rp pipeline -i domains.txt -o store.jsonl --allow scope-allow.txt --deny scope-deny.txt
 ```
 
-This runs all phases in sequence: enum → resolve → headers → scope → analyze.
+This runs all phases in sequence: enum → resolve → headers → rdap → scope → analyze.
 
 ### Individual commands
 
@@ -123,7 +123,15 @@ rp headers -i store.jsonl --expected headers.txt         # custom expected heade
 
 Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers.
 
-#### 4. Scope tagging
+#### 4. RDAP registration lookup
+
+```bash
+rp rdap -i store.jsonl
+```
+
+Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skip with `rp pipeline --no-rdap`.
+
+#### 5. Scope tagging
 
 ```bash
 rp scope -i store.jsonl --allow allow.txt --deny deny.txt
@@ -144,7 +152,7 @@ api.example.com
 re:.*\.dev\.example\.com
 ```
 
-#### 5. Analyze
+#### 6. Analyze
 
 ```bash
 rp analyze -i store.jsonl
@@ -153,14 +161,21 @@ rp analyze -i store.jsonl --enrich-online               # ipinfo.io fallback for
 ```
 
 Detects:
-- Stale CNAMEs (chain exists but resolves to nothing)
+- Stale CNAMEs (chain exists but resolves to nothing, or target domain is unregistered)
 - Subdomain takeover candidates (17 services: S3, Azure, GitHub Pages, Heroku, Shopify, Fastly, Netlify, CloudFront, etc.)
 - Geographic mismatches (IPs in unexpected countries)
 - Private IPs on public DNS records
-- IPv4/IPv6-only hosts
-- Multiple apex owners (3+ ASNs under one domain)
+- Multiple apex owners (2+ non-CDN ASNs under one domain, CDN-aware)
+- SPF misconfigurations (+all or ?all)
+- NS delegation takeover risks (nameserver hostname is NXDOMAIN)
+- Dangling MX records (mail server hostname is NXDOMAIN)
+- Domain expiration warnings (RDAP: expiring within 60 days, expired, risky statuses)
+- Missing DNSSEC delegation signing
+- HTTP status code anomalies and version disclosure in headers
 
-#### 6. Report
+Each flag is assigned a severity rating (critical, high, medium, low). The host's overall severity reflects its highest-severity flag for easy filtering.
+
+#### 7. Report
 
 ```bash
 rp report -i store.jsonl --view combined                 # full JSONL (default)
@@ -176,7 +191,7 @@ rp report -i store.jsonl --flagged-only                  # only hosts with analy
 rp report -i store.jsonl --view subs -o subs.txt         # write to file
 ```
 
-#### 7. Diff
+#### 8. Diff
 
 ```bash
 rp diff --old scan1.jsonl --new scan2.jsonl
@@ -196,15 +211,16 @@ Compares two snapshots and reports:
 | Module | File | Purpose |
 |--------|------|---------|
 | CLI | `reconpipe/cli.py` | Click command group, argument parsing, pipeline orchestration |
-| Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, ScopeInfo, AnalysisInfo, ResolvedIp |
+| Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, ScopeInfo, AnalysisInfo, RdapInfo, ResolvedIp |
 | Store | `reconpipe/store.py` | JSONL read/write with merge-on-FQDN (unions discovery_sources, preserves phase data) |
 | Config | `reconpipe/config.py` | Loads `config.toml` and `keys.toml`, resolves env var overrides |
 | crt.sh | `reconpipe/enum/crtsh.py` | Certificate Transparency log queries with retry/backoff |
 | BBOT | `reconpipe/enum/bbot.py` | Subprocess wrapper for BBOT, parses JSON output, passes secrets |
 | Resolve | `reconpipe/resolve.py` | Async DNS (dnspython), CNAME walking, wildcard detection, MaxMind enrichment |
-| Headers | `reconpipe/headers.py` | Security header checks (native httpx + securityheaders.com scraping) |
+| Headers | `reconpipe/headers.py` | Security header checks (native httpx) |
+| RDAP | `reconpipe/rdap.py` | RDAP registration lookups per apex (registrar, expiry, status, DNSSEC) |
 | Scope | `reconpipe/scope.py` | Three-state classification with exact/wildcard/regex pattern matching |
-| Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, geo checks |
+| Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, geo checks, RDAP flags |
 | Fingerprints | `reconpipe/fingerprints.py` | 17 subdomain takeover fingerprints (S3, Azure, GitHub Pages, etc.) |
 | Report | `reconpipe/report.py` | Output views: subs, ips, subs-ips, headers, combined (JSONL/JSON/CSV) |
 | Diff | `reconpipe/diff.py` | Structured snapshot comparison (added/removed/changed) |
@@ -240,8 +256,18 @@ All data lives in a single JSONL file (one JSON object per line, keyed by FQDN).
     "warning": null
   },
   "analysis": {
-    "flags": ["ipv4_only"],
+    "flags": [],
+    "severity": null,
     "takeover_candidate": false
+  },
+  "rdap": {
+    "registrar": "Cloudflare, Inc.",
+    "registered_at": "2020-01-15T00:00:00Z",
+    "expires_at": "2027-01-15T00:00:00Z",
+    "statuses": ["clientTransferProhibited"],
+    "nameservers": ["ns1.cloudflare.com", "ns2.cloudflare.com"],
+    "dnssec": true,
+    "queried_at": "2026-05-17T12:00:00+00:00"
   }
 }
 ```

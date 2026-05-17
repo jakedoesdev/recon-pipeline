@@ -9,6 +9,7 @@ from .models import (
     DnsInfo,
     HeaderInfo,
     Host,
+    RdapInfo,
     ResolvedIp,
     ScopeInfo,
     _now_iso,
@@ -45,6 +46,10 @@ def _rebuild_host(raw: dict) -> Host:
     if raw.get("analysis"):
         analysis = AnalysisInfo(**raw["analysis"])
 
+    rdap = None
+    if raw.get("rdap"):
+        rdap = RdapInfo(**raw["rdap"])
+
     return Host(
         fqdn=raw["fqdn"],
         apex=raw["apex"],
@@ -55,6 +60,7 @@ def _rebuild_host(raw: dict) -> Host:
         headers=headers,
         scope=scope,
         analysis=analysis,
+        rdap=rdap,
     )
 
 
@@ -104,6 +110,8 @@ def merge_host(existing: Host, incoming: Host) -> Host:
         existing.scope = incoming.scope
     if incoming.analysis is not None:
         existing.analysis = incoming.analysis
+    if incoming.rdap is not None:
+        existing.rdap = incoming.rdap
 
     return existing
 

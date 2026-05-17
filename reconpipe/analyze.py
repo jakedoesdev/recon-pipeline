@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import dns.resolver
@@ -24,12 +25,33 @@ def _load_fingerprints(path: str | None) -> list[TakeoverFingerprint]:
     return BUILTIN_FINGERPRINTS
 
 
+def _is_domain_unregistered(fqdn: str) -> bool:
+    """Check if a domain appears unregistered by querying SOA then NS."""
+    import tldextract
+    ext = tldextract.extract(fqdn)
+    if not ext.domain or not ext.suffix:
+        return False
+    registrable = f"{ext.domain}.{ext.suffix}"
+    for rdtype in ("SOA", "NS"):
+        try:
+            dns.resolver.resolve(registrable, rdtype)
+            return False
+        except dns.resolver.NXDOMAIN:
+            return True
+        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
+                dns.exception.Timeout, Exception):
+            continue
+    return False
+
+
 def _check_stale_cname(host: Host) -> bool:
-    """CNAME chain exists but final target is NXDOMAIN (detected during resolve as nxdomain=False but no IPs)."""
+    """CNAME chain exists but final target doesn't resolve or is unregistered."""
     if not host.dns or not host.dns.cname_chain:
         return False
-    # If the host has a CNAME chain but resolved to nothing, it's stale
     if not host.dns.resolved_ips and not host.dns.nxdomain:
+        return True
+    final_target = host.dns.cname_chain[-1]
+    if _is_domain_unregistered(final_target):
         return True
     return False
 
@@ -214,21 +236,65 @@ def _check_version_disclosure(host: Host) -> list[str]:
     return flags
 
 
-def _check_multiple_apex_owners(hosts: dict[str, Host]) -> set[str]:
-    """Flag hosts under an apex that resolves to wildly different ASNs."""
-    apex_asns: dict[str, set[int]] = defaultdict(set)
+_CDN_ASNS: frozenset[int] = frozenset({
+    13335,   # Cloudflare
+    209242,  # Cloudflare (secondary)
+    54113,   # Fastly
+    20940,   # Akamai
+    16625,   # Akamai
+    16509,   # Amazon / AWS
+    14618,   # Amazon / AWS
+    8075,    # Microsoft Azure
+    15169,   # Google
+    396982,  # Google Cloud
+    36183,   # Akamai
+    20446,   # Stackpath / Highwinds
+    30148,   # Sucuri
+    13238,   # Yandex
+    132892,  # Cloudflare (APAC)
+    394536,  # Fastly (secondary)
+    46489,   # Twitch / Amazon
+    16591,   # Google Fiber
+    19551,   # Incapsula / Imperva
+})
+
+
+def _check_multiple_apex_owners(hosts: dict[str, Host]) -> dict[str, set[int]]:
+    """Returns {apex: set_of_non_cdn_asns} for apexes with 2+ non-CDN ASNs."""
+    apex_cdn: dict[str, set[int]] = defaultdict(set)
+    apex_non_cdn: dict[str, set[int]] = defaultdict(set)
     for host in hosts.values():
         if not host.dns:
             continue
         for rip in host.dns.resolved_ips:
             if rip.asn and not rip.is_private:
-                apex_asns[host.apex].add(rip.asn)
+                if rip.asn in _CDN_ASNS:
+                    apex_cdn[host.apex].add(rip.asn)
+                else:
+                    apex_non_cdn[host.apex].add(rip.asn)
 
-    flagged_apexes: set[str] = set()
-    for apex, asns in apex_asns.items():
-        if len(asns) >= 3:
-            flagged_apexes.add(apex)
-    return flagged_apexes
+    flagged: dict[str, set[int]] = {}
+    for apex, non_cdn_asns in apex_non_cdn.items():
+        if len(non_cdn_asns) >= 2:
+            flagged[apex] = non_cdn_asns
+    return flagged
+
+
+def _find_majority_asn(hosts: dict[str, Host]) -> dict[str, int]:
+    """Returns {apex: most_common_non_cdn_asn} for outlier detection."""
+    apex_asn_counts: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for host in hosts.values():
+        if not host.dns:
+            continue
+        for rip in host.dns.resolved_ips:
+            if rip.asn and not rip.is_private and rip.asn not in _CDN_ASNS:
+                apex_asn_counts[host.apex][rip.asn] += 1
+
+    majority: dict[str, int] = {}
+    for apex, counts in apex_asn_counts.items():
+        if counts:
+            majority[apex] = max(counts, key=counts.get)
+    return majority
 
 
 def _enrich_online(host: Host) -> None:
@@ -261,6 +327,92 @@ def _enrich_online(host: Host) -> None:
             logger.debug("ipinfo.io lookup failed for %s: %s", rip.ip, e)
 
 
+_SEVERITY_ORDER = ["critical", "high", "medium", "low"]
+_SEVERITY_RANK = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
+
+_FLAG_SEVERITY: dict[str, str] = {
+    "takeover": "critical",
+    "ns_takeover_risk": "critical",
+    "domain_expired": "critical",
+    "stale_cname": "high",
+    "mx_dangling": "high",
+    "domain_expiring_soon": "high",
+    "spf_permissive": "high",
+    "private_ip_external": "high",
+    "geo_mismatch": "medium",
+    "multiple_apex_owners": "medium",
+    "unexpected_asn": "medium",
+    "no_dnssec": "low",
+    "version_disclosed": "low",
+    "http_server_error": "low",
+    "http_auth_required": "low",
+    "http_not_found": "low",
+    "http_redirect_permanent": "low",
+    "wildcard_dns": "low",
+}
+
+_DOMAIN_STATUS_SEVERITY: dict[str, str] = {
+    "pendingdelete": "critical",
+    "redemptionperiod": "critical",
+    "serverhold": "high",
+    "clienthold": "high",
+    "pendingtransfer": "medium",
+}
+
+
+def _flag_severity(flag: str) -> str:
+    if flag.startswith("domain_status:"):
+        status = flag.split(":", 1)[1].lower().replace(" ", "")
+        return _DOMAIN_STATUS_SEVERITY.get(status, "medium")
+    prefix = flag.split(":")[0]
+    return _FLAG_SEVERITY.get(prefix, "low")
+
+
+def _max_severity(flags: list[str]) -> str | None:
+    if not flags:
+        return None
+    best = len(_SEVERITY_ORDER)
+    for flag in flags:
+        rank = _SEVERITY_RANK.get(_flag_severity(flag), best)
+        if rank < best:
+            best = rank
+    return _SEVERITY_ORDER[best] if best < len(_SEVERITY_ORDER) else "low"
+
+
+_RDAP_EXPIRY_WARN_DAYS = 60
+_RDAP_RISKY_STATUSES = frozenset({
+    "pendingdelete",
+    "redemptionperiod",
+    "serverhold",
+    "clienthold",
+    "pendingtransfer",
+})
+
+
+def _check_rdap(host: Host) -> list[str]:
+    if not host.rdap:
+        return []
+    flags = []
+    if host.rdap.expires_at:
+        try:
+            exp_str = host.rdap.expires_at.replace("Z", "+00:00")
+            exp = datetime.fromisoformat(exp_str)
+            now = datetime.now(timezone.utc)
+            days_left = (exp - now).days
+            if days_left <= 0:
+                flags.append("domain_expired")
+            elif days_left <= _RDAP_EXPIRY_WARN_DAYS:
+                flags.append(f"domain_expiring_soon:{days_left}d")
+        except (ValueError, TypeError):
+            pass
+    for status in host.rdap.statuses:
+        if status.lower().replace(" ", "") in _RDAP_RISKY_STATUSES:
+            flags.append(f"domain_status:{status}")
+    if host.rdap.dnssec is False:
+        flags.append("no_dnssec")
+    return flags
+
+
 def run_analyze(
     store_path: Path,
     expected_country: str | None = None,
@@ -274,6 +426,7 @@ def run_analyze(
 
     fingerprints = _load_fingerprints(fingerprints_path)
     multi_apex = _check_multiple_apex_owners(hosts)
+    majority_asn = _find_majority_asn(hosts)
 
     logger.info("Analyzing %d hosts", len(hosts))
 
@@ -286,6 +439,7 @@ def run_analyze(
     spf_count = 0
     ns_takeover_count = 0
     mx_dangling_count = 0
+    rdap_count = 0
 
     for host in hosts.values():
         if not host.analysis:
@@ -325,6 +479,14 @@ def run_analyze(
         if host.apex in multi_apex:
             existing_flags.add("multiple_apex_owners")
 
+        # Outlier ASN — host's non-CDN ASN differs from the apex majority
+        if host.dns and host.apex in majority_asn:
+            maj = majority_asn[host.apex]
+            for rip in host.dns.resolved_ips:
+                if rip.asn and not rip.is_private and rip.asn not in _CDN_ASNS and rip.asn != maj:
+                    existing_flags.add(f"unexpected_asn:{rip.asn}")
+                    break
+
         # SPF misconfiguration
         if _check_spf_permissive(host):
             existing_flags.add("spf_permissive")
@@ -341,6 +503,11 @@ def run_analyze(
             existing_flags.add(mf)
             mx_dangling_count += 1
 
+        # RDAP-derived flags
+        for rf in _check_rdap(host):
+            existing_flags.add(rf)
+            rdap_count += 1
+
         # HTTP status code flags
         for sf in _check_status_code(host):
             existing_flags.add(sf)
@@ -352,6 +519,7 @@ def run_analyze(
             version_count += 1
 
         host.analysis.flags = sorted(existing_flags)
+        host.analysis.severity = _max_severity(host.analysis.flags)
 
     save_store(store_path, hosts)
 
@@ -359,8 +527,8 @@ def run_analyze(
     logger.info(
         "Analysis complete: %d takeover candidates, %d stale CNAMEs, %d geo mismatches, "
         "%d private IPs, %d SPF permissive, %d NS takeover risks, %d dangling MX, "
-        "%d status flags, %d version disclosures, %d total hosts flagged",
+        "%d RDAP flags, %d status flags, %d version disclosures, %d total hosts flagged",
         takeover_count, stale_count, geo_count, private_count,
-        spf_count, ns_takeover_count, mx_dangling_count,
+        spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
         status_count, version_count, flagged_total,
     )

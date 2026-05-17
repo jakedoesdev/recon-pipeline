@@ -174,6 +174,19 @@ def scope(input_path, allow, deny):
 
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
+def rdap(input_path):
+    """RDAP registration lookups (per apex domain)."""
+    from .rdap import run_rdap
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
+    )
+
+    run_rdap(store_path=Path(input_path))
+
+
+@cli.command()
+@click.option("-i", "--input", "input_path", required=True)
 @click.option("--expected-country", default=None)
 @click.option("--takeover-fingerprints", default=None)
 @click.option("--enrich-online/--no-enrich-online", default=False)
@@ -206,15 +219,17 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
 @click.option("--allow", default=None, help="Allow-list file for scope")
 @click.option("--deny", default=None, help="Deny-list file for scope")
 @click.option("--expected-country", default=None)
+@click.option("--rdap/--no-rdap", default=True)
 @click.option("--enrich-online/--no-enrich-online", default=False)
 def pipeline(
     input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
     resolvers, concurrency, scheme, allow, deny,
-    expected_country, enrich_online,
+    rdap, expected_country, enrich_online,
 ):
     """Run full pipeline: enum → resolve → headers → scope → analyze."""
     from .analyze import run_analyze
     from .headers import run_headers
+    from .rdap import run_rdap
     from .resolve import run_resolve
     from .scope import run_scope
 
@@ -272,14 +287,21 @@ def pipeline(
     click.echo("━━━ Phase: headers ━━━", err=True)
     run_headers(store_path=store, scheme=scheme)
 
-    # 4. Scope
+    # 4. RDAP
+    if rdap:
+        click.echo("━━━ Phase: rdap ━━━", err=True)
+        run_rdap(store_path=store)
+    else:
+        click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
+
+    # 5. Scope
     if allow or deny:
         click.echo("━━━ Phase: scope ━━━", err=True)
         run_scope(store_path=store, allow_path=allow, deny_path=deny)
     else:
         click.echo("━━━ Phase: scope (skipped — no allow/deny files) ━━━", err=True)
 
-    # 5. Analyze
+    # 6. Analyze
     click.echo("━━━ Phase: analyze ━━━", err=True)
     run_analyze(
         store_path=store,

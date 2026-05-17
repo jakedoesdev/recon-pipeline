@@ -47,8 +47,20 @@ class ScopeInfo:
 
 
 @dataclass
+class RdapInfo:
+    registrar: str | None = None
+    registered_at: str | None = None
+    expires_at: str | None = None
+    statuses: list[str] = field(default_factory=list)
+    nameservers: list[str] = field(default_factory=list)
+    dnssec: bool | None = None
+    queried_at: str = ""
+
+
+@dataclass
 class AnalysisInfo:
     flags: list[str] = field(default_factory=list)
+    severity: str | None = None
     takeover_candidate: bool = False
     notes: str | None = None
 
@@ -64,6 +76,7 @@ class Host:
     headers: HeaderInfo | None = None
     scope: ScopeInfo | None = None
     analysis: AnalysisInfo | None = None
+    rdap: RdapInfo | None = None
 
 
 def _now_iso() -> str:
