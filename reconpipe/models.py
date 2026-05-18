@@ -33,6 +33,7 @@ class DnsInfo:
 class HeaderInfo:
     url_checked: str = ""
     status_code: int = 0
+    redirect_chain: list[str] = field(default_factory=list)
     present: dict[str, str] = field(default_factory=dict)
     missing: list[str] = field(default_factory=list)
     page_title: str | None = None

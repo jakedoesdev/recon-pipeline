@@ -61,6 +61,7 @@ Populated by `rp headers`. Contains the results of HTTP security header probing.
 |---|---|---|
 | `url_checked` | string | The actual URL that was probed. This may differ from the FQDN if the request followed redirects or CNAME resolution landed on a different site. **Important:** If this doesn't match the FQDN, the header data (status code, present/missing headers) describes the destination site, not the original subdomain. Always compare this field against the FQDN to catch mismatches. |
 | `status_code` | int | HTTP status code returned (e.g. `200`, `301`, `403`). |
+| `redirect_chain` | list | Full redirect chain as URLs, from the original request through each redirect to the final destination. Empty list if no redirects occurred. Useful for identifying hosts that all redirect to the same third-party service. Can be used with `rp scope --redirect-deny` to filter them out. |
 | `present` | dict | Security headers and informational headers found in the response, as `{header_name: header_value}` pairs. Includes expected security headers, `server`, `x-powered-by`, CORS headers (`access-control-allow-origin`, `access-control-allow-credentials`), and all `X-` prefixed headers from the response. |
 | `missing` | list | Security headers that were expected but not found (e.g. `["Strict-Transport-Security", "X-Content-Type-Options"]`). Checked against a default or user-provided expected-headers list. |
 | `page_title` | string or null | The content of the `<title>` tag from the HTML response body. Quick identification of what's running (e.g. `"Welcome to nginx!"`, `"Confluence"`, `"GitLab"`). Null if no title tag found or the page returned no body. |
@@ -116,7 +117,7 @@ Each flag is assigned a severity level. The host's `analysis.severity` field ref
 |---|---|
 | **critical** | `takeover:*`, `ns_takeover_risk:*`, `domain_expired`, `cert_expired`, `domain_status:pendingDelete`, `domain_status:redemptionPeriod` |
 | **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `cert_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external` |
-| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `cert_self_signed`, `cors_wildcard_credentials`, `domain_status:pendingTransfer` |
+| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `cert_self_signed`, `cors_wildcard_credentials`, `domain_status:pendingTransfer`, `lower_env_exposed` |
 | **low** | `no_dnssec`, `cookies_missing_secure`, `cookies_missing_httponly`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns`, `sans_new_subdomains` |
 
 ### rdap (RdapInfo)
@@ -357,6 +358,21 @@ rpq | jq 'select(.tls.issuer_org? // "" | test("Let.s Encrypt"; "i"))'
 **Hosts with TLS SANs containing undiscovered subdomains:**
 ```bash
 rpq | jq 'select([.analysis.flags[]?] | any(. == "sans_new_subdomains"))'
+```
+
+**Exposed lower environments (dev/staging/qa/uat/test/sandbox/preprod):**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "lower_env_exposed"))'
+```
+
+**Hosts that redirected (with full redirect chain):**
+```bash
+rpq | jq 'select(.headers.redirect_chain | length > 0) | {fqdn, chain: .headers.redirect_chain}'
+```
+
+**Find all unique redirect destinations (useful for building redirect-deny lists):**
+```bash
+rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort -u
 ```
 
 ### DNS-specific queries

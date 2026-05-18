@@ -47,10 +47,24 @@ def _classify(fqdn: str, allow: list[str], deny: list[str]) -> ScopeInfo:
     )
 
 
+def _redirect_matches(host: Host, redirect_deny: list[str]) -> str | None:
+    if not host.headers or not host.headers.redirect_chain:
+        return None
+    for url in host.headers.redirect_chain:
+        for pattern in redirect_deny:
+            if pattern.startswith("re:"):
+                if re.search(pattern[3:], url):
+                    return f"redirect-deny:re:{pattern[3:]}"
+            elif pattern in url:
+                return f"redirect-deny:{pattern}"
+    return None
+
+
 def run_scope(
     store_path: Path,
     allow_path: str | None,
     deny_path: str | None,
+    redirect_deny_path: str | None = None,
 ) -> None:
     hosts = load_store(store_path)
     if not hosts:
@@ -59,6 +73,7 @@ def run_scope(
 
     allow = _load_patterns(allow_path)
     deny = _load_patterns(deny_path)
+    redirect_deny = _load_patterns(redirect_deny_path)
 
     if not allow and not deny:
         logger.warning("No allow or deny patterns provided — all hosts will be 'unmatched'")
@@ -66,9 +81,17 @@ def run_scope(
     in_count = 0
     out_count = 0
     unmatched_count = 0
+    redirect_deny_count = 0
 
     for host in hosts.values():
         host.scope = _classify(host.fqdn, allow, deny)
+
+        if host.scope.status != "out" and redirect_deny:
+            matched_rule = _redirect_matches(host, redirect_deny)
+            if matched_rule:
+                host.scope = ScopeInfo(status="out", matched_rule=matched_rule)
+                redirect_deny_count += 1
+
         if host.scope.status == "in":
             in_count += 1
         elif host.scope.status == "out":
@@ -78,3 +101,5 @@ def run_scope(
 
     save_store(store_path, hosts)
     logger.info("Scope complete: %d in, %d out, %d unmatched", in_count, out_count, unmatched_count)
+    if redirect_deny_count:
+        logger.info("Redirect-deny matched %d hosts", redirect_deny_count)

@@ -65,6 +65,7 @@ def run_reverse(
     store_path: Path,
     resolvers: list[str],
     concurrency: int = 50,
+    refresh: bool = False,
 ) -> None:
     hosts = load_store(store_path)
     if not hosts:
@@ -72,6 +73,7 @@ def run_reverse(
         return
 
     unique_ips: set[str] = set()
+    already_have: set[str] = set()
     for host in hosts.values():
         if is_out_of_scope(host):
             continue
@@ -79,7 +81,15 @@ def run_reverse(
             continue
         for rip in host.dns.resolved_ips:
             if not rip.is_private:
-                unique_ips.add(rip.ip)
+                if not refresh and rip.ptr is not None:
+                    already_have.add(rip.ip)
+                else:
+                    unique_ips.add(rip.ip)
+
+    unique_ips -= already_have
+
+    if already_have:
+        logger.info("Skipping %d IPs with existing PTR data (use --refresh to re-check)", len(already_have))
 
     if not unique_ips:
         logger.warning("No public IPs to reverse-resolve")

@@ -102,9 +102,12 @@ target.org
 
 ```bash
 rp scope -i store.jsonl --allow allow.txt --deny deny.txt
+rp scope -i store.jsonl --allow allow.txt --deny deny.txt --redirect-deny redirect-deny.txt
 ```
 
 Tags every host as `in`, `out`, or `unmatched`. Deny rules are evaluated first (deny wins). Hosts tagged `out` are skipped by all downstream modules (resolve, headers, tls, rdap, analyze) but remain in the store with any previously collected data intact.
+
+Use `--redirect-deny` after running `rp headers` to exclude hosts whose redirect chain matches specified patterns. This is useful for filtering out large numbers of subdomains that all redirect to the same third-party login page or parked domain.
 
 Scope file syntax:
 
@@ -117,6 +120,17 @@ api.example.com
 
 # Regex
 re:.*\.dev\.example\.com
+```
+
+Redirect-deny file syntax (matched against full redirect URLs):
+
+```
+# Substring match against redirect chain URLs
+login.microsoftonline.com
+parked.example.com
+
+# Regex
+re:.*\.parked-domain\.com
 ```
 
 #### 3. DNS resolution
@@ -137,39 +151,43 @@ Resolves A, AAAA, and CNAME records. Walks CNAME chains (up to 10 hops). Detects
 rp reverse -i store.jsonl
 rp reverse -i store.jsonl --resolvers 1.1.1.1,8.8.8.8
 rp reverse -i store.jsonl --concurrency 100
+rp reverse -i store.jsonl --refresh                        # re-check all IPs
 ```
 
-Performs PTR lookups on all unique public IPs discovered during resolution. PTR hostnames are stored on each `ResolvedIp` entry. Hosts sharing infrastructure often have PTR records pointing to hostnames not found by any passive source.
+Performs PTR lookups on all unique public IPs discovered during resolution. PTR hostnames are stored on each `ResolvedIp` entry. Hosts sharing infrastructure often have PTR records pointing to hostnames not found by any passive source. Skips IPs that already have PTR data from prior runs; use `--refresh` to re-check all.
 
 #### 5. Security headers
 
 ```bash
 rp headers -i store.jsonl
 rp headers -i store.jsonl --scheme both                  # check http and https
-rp headers -i store.jsonl --source securityheaders       # use securityheaders.com
-rp headers -i store.jsonl --source both                  # native + securityheaders.com
 rp headers -i store.jsonl --force                        # check even unresolved hosts
 rp headers -i store.jsonl --expected headers.txt         # custom expected headers file
+rp headers -i store.jsonl --refresh                      # re-check all hosts
+rp headers -i store.jsonl --concurrency 10               # limit concurrent requests
 ```
 
-Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers.
+Checks for missing security headers (Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Strict-Transport-Security, Permissions-Policy, Referrer-Policy). Records status code, server banner, and present headers. Runs concurrently (default 20 requests, capped at 3 per IP to avoid triggering WAFs). Skips hosts that already have header data from prior runs; use `--refresh` to re-check all.
 
 #### 6. TLS certificate collection
 
 ```bash
 rp tls -i store.jsonl
 rp tls -i store.jsonl --port 8443                       # non-standard TLS port
+rp tls -i store.jsonl --refresh                         # re-check all hosts
+rp tls -i store.jsonl --concurrency 50                  # limit concurrent connections
 ```
 
-Connects to each resolved host via TLS and extracts the live certificate: subject, issuer, validity dates, serial number, SANs, and self-signed status. SANs can reveal additional domains not found during enumeration. Requires the `cryptography` package.
+Connects to each resolved host via TLS and extracts the live certificate: subject, issuer, validity dates, serial number, SANs, and self-signed status. SANs can reveal additional domains not found during enumeration. Requires the `cryptography` package. Runs concurrently (default 30 connections, capped at 5 per IP to avoid triggering rate limits). Skips hosts that already have TLS data from prior runs; use `--refresh` to re-check all.
 
 #### 7. RDAP registration lookup
 
 ```bash
 rp rdap -i store.jsonl
+rp rdap -i store.jsonl --refresh                        # re-check all apex domains
 ```
 
-Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skip with `rp pipeline --no-rdap`.
+Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skips apex domains that already have RDAP data from prior runs; use `--refresh` to re-check all. Skip entirely with `rp pipeline --no-rdap`.
 
 #### 8. Analyze
 
@@ -195,6 +213,7 @@ Detects:
 - Cookie security (missing Secure, HttpOnly flags)
 - TLS SANs containing subdomains not in the store (potential undiscovered hosts)
 - HTTP status code anomalies and version disclosure in headers
+- Exposed lower environments (dev, staging, QA, UAT, test, sandbox, preprod, internal) detected via FQDN patterns and page titles
 
 Each flag is assigned a severity rating (critical, high, medium, low). The host's overall severity reflects its highest-severity flag for easy filtering.
 
@@ -269,6 +288,7 @@ All data lives in a single JSONL file (one JSON object per line, keyed by FQDN).
   },
   "headers": {
     "status_code": 200,
+    "redirect_chain": ["https://app.example.com/", "https://app.example.com/dashboard"],
     "present": {"strict-transport-security": "max-age=31536000", "x-frame-options": "DENY", "server": "cloudflare"},
     "missing": ["Content-Security-Policy", "Permissions-Policy"],
     "page_title": "App Dashboard",

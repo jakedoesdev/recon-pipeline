@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import collections
 import logging
 import re
+import signal
 from pathlib import Path
 
 import httpx
@@ -120,50 +123,54 @@ def _parse_cookies(resp: httpx.Response) -> list[dict]:
     return cookies
 
 
-def _native_check(
+async def _native_check(
+    client: httpx.AsyncClient,
     fqdn: str,
     scheme: str,
     expected: list[str],
-    timeout: int,
     user_agent: str,
 ) -> HeaderInfo | None:
     url = f"{scheme}://{fqdn}"
     headers_dict: dict[str, str] = {}
 
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, verify=False) as client:
-            resp = client.get(url, headers={"User-Agent": user_agent})
+        resp = await client.get(url, headers={"User-Agent": user_agent})
 
-            for key in expected + BONUS_HEADERS + CORS_HEADERS:
-                val = resp.headers.get(key)
-                if val:
-                    headers_dict[key.lower()] = val[:200]
+        redirect_chain = [str(r.url) for r in resp.history]
+        if redirect_chain:
+            redirect_chain.append(str(resp.url))
 
-            for key, val in resp.headers.items():
-                k = key.lower()
-                if k.startswith("x-") and k not in headers_dict:
-                    headers_dict[k] = val[:200]
+        for key in expected + BONUS_HEADERS + CORS_HEADERS:
+            val = resp.headers.get(key)
+            if val:
+                headers_dict[key.lower()] = val[:200]
 
-            present = {k: v for k, v in headers_dict.items()}
-            missing = [h for h in expected if h.lower() not in headers_dict]
+        for key, val in resp.headers.items():
+            k = key.lower()
+            if k.startswith("x-") and k not in headers_dict:
+                headers_dict[k] = val[:200]
 
-            body = resp.text[:15000]
-            page_title, meta_generator, technologies = _parse_body(body)
-            cookies = _parse_cookies(resp)
+        present = {k: v for k, v in headers_dict.items()}
+        missing = [h for h in expected if h.lower() not in headers_dict]
 
-            return HeaderInfo(
-                url_checked=str(resp.url),
-                status_code=resp.status_code,
-                present=present,
-                missing=missing,
-                page_title=page_title,
-                meta_generator=meta_generator,
-                technologies=technologies,
-                cookies=cookies,
-                source="native",
-                grade=None,
-                checked_at=_now_iso(),
-            )
+        body = resp.text[:15000]
+        page_title, meta_generator, technologies = _parse_body(body)
+        cookies = _parse_cookies(resp)
+
+        return HeaderInfo(
+            url_checked=str(resp.url),
+            status_code=resp.status_code,
+            redirect_chain=redirect_chain,
+            present=present,
+            missing=missing,
+            page_title=page_title,
+            meta_generator=meta_generator,
+            technologies=technologies,
+            cookies=cookies,
+            source="native",
+            grade=None,
+            checked_at=_now_iso(),
+        )
 
     except httpx.TimeoutException:
         logger.debug("Timeout connecting to %s", url)
@@ -176,22 +183,93 @@ def _native_check(
         return None
 
 
-def _check_host(
+async def _check_host(
+    client: httpx.AsyncClient,
     host: Host,
     scheme: str,
     expected: list[str],
-    timeout: int,
     user_agent: str,
 ) -> Host:
     schemes = [scheme] if scheme != "both" else ["https", "http"]
 
     for s in schemes:
-        result = _native_check(host.fqdn, s, expected, timeout, user_agent)
+        result = await _native_check(client, host.fqdn, s, expected, user_agent)
         if result:
             host.headers = result
             break
 
     return host
+
+
+def _host_primary_ip(host: Host) -> str:
+    if host.dns and host.dns.resolved_ips:
+        return host.dns.resolved_ips[0].ip
+    return host.fqdn
+
+
+FLUSH_INTERVAL = 25
+PER_IP_LIMIT = 3
+
+
+async def _check_all(
+    hosts: dict[str, Host],
+    targets: list[Host],
+    store_path: Path,
+    scheme: str,
+    expected: list[str],
+    user_agent: str,
+    timeout: int,
+    concurrency: int,
+) -> tuple[int, bool]:
+    interrupted = False
+
+    def _handle_sigint(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+        logger.warning("Interrupt received — finishing in-flight requests and saving progress")
+
+    prev_handler = signal.signal(signal.SIGINT, _handle_sigint)
+
+    global_sem = asyncio.Semaphore(concurrency)
+    ip_sems: dict[str, asyncio.Semaphore] = collections.defaultdict(
+        lambda: asyncio.Semaphore(PER_IP_LIMIT)
+    )
+
+    checked = 0
+
+    async with httpx.AsyncClient(
+        timeout=timeout, follow_redirects=True, verify=False,
+    ) as client:
+        async def process(host: Host) -> Host:
+            ip = _host_primary_ip(host)
+            async with global_sem, ip_sems[ip]:
+                return await _check_host(client, host, scheme, expected, user_agent)
+
+        pending: set[asyncio.Task] = set()
+
+        for host in targets:
+            if interrupted:
+                break
+            task = asyncio.create_task(process(host))
+            pending.add(task)
+
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                    hosts[result.fqdn] = result
+                except Exception as e:
+                    logger.debug("Task failed: %s", e)
+                checked += 1
+                if checked % FLUSH_INTERVAL == 0:
+                    logger.info("Progress: %d/%d checked", checked, len(targets))
+                    save_store(store_path, hosts)
+
+    signal.signal(signal.SIGINT, prev_handler)
+    return checked, interrupted
 
 
 def run_headers(
@@ -201,6 +279,8 @@ def run_headers(
     user_agent: str | None = None,
     expected_path: str | None = None,
     force: bool = False,
+    refresh: bool = False,
+    concurrency: int = 20,
 ) -> None:
     hosts = load_store(store_path)
     if not hosts:
@@ -211,9 +291,13 @@ def run_headers(
     ua = user_agent or DEFAULT_UA
 
     # Filter to hosts that resolved (unless --force), skip denied hosts
+    skipped = 0
     targets = []
     for host in hosts.values():
         if is_out_of_scope(host):
+            continue
+        if not refresh and host.headers is not None:
+            skipped += 1
             continue
         if not force and (not host.dns or host.dns.nxdomain):
             continue
@@ -221,18 +305,29 @@ def run_headers(
             continue
         targets.append(host)
 
-    logger.info("Checking headers on %d hosts (scheme=%s)", len(targets), scheme)
+    if skipped:
+        logger.info("Skipping %d hosts with existing header data (use --refresh to re-check)", skipped)
+    logger.info("Checking headers on %d hosts (scheme=%s, concurrency=%d, per-IP limit=%d)",
+                len(targets), scheme, concurrency, PER_IP_LIMIT)
 
-    checked = 0
-    for host in targets:
-        host = _check_host(host, scheme, expected, timeout, ua)
-        hosts[host.fqdn] = host
-        checked += 1
+    if not targets:
+        return
 
-        if checked % 25 == 0:
-            logger.info("Progress: %d/%d checked", checked, len(targets))
+    checked, interrupted = asyncio.run(_check_all(
+        hosts=hosts,
+        targets=targets,
+        store_path=store_path,
+        scheme=scheme,
+        expected=expected,
+        user_agent=ua,
+        timeout=timeout,
+        concurrency=concurrency,
+    ))
 
     save_store(store_path, hosts)
 
-    success_count = sum(1 for h in targets if h.headers is not None)
-    logger.info("Headers complete: %d/%d hosts got results", success_count, len(targets))
+    success_count = sum(1 for h in hosts.values() if h.headers is not None)
+    if interrupted:
+        logger.info("Headers interrupted: %d/%d hosts checked, progress saved", checked, len(targets))
+    else:
+        logger.info("Headers complete: %d/%d hosts got results", success_count, len(targets))

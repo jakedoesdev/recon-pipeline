@@ -88,14 +88,23 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
         return None
 
 
-def run_rdap(store_path: Path) -> None:
+def run_rdap(store_path: Path, refresh: bool = False) -> None:
     hosts = load_store(store_path)
     if not hosts:
         logger.warning("No hosts in store")
         return
 
     in_scope_hosts = [h for h in hosts.values() if not is_out_of_scope(h)]
-    apexes: set[str] = {h.apex for h in in_scope_hosts}
+    all_apexes: set[str] = {h.apex for h in in_scope_hosts}
+
+    if refresh:
+        apexes = all_apexes
+    else:
+        already_have = {h.apex for h in in_scope_hosts if h.rdap is not None}
+        apexes = all_apexes - already_have
+        if already_have:
+            logger.info("Skipping %d apex domains with existing RDAP data (use --refresh to re-check)", len(already_have))
+
     logger.info("Querying RDAP for %d apex domains", len(apexes))
 
     rdap_cache: dict[str, RdapInfo | None] = {}

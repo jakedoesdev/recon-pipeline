@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections import defaultdict
@@ -18,6 +19,7 @@ from .store import is_out_of_scope, load_store, save_store
 logger = logging.getLogger(__name__)
 
 TAKEOVER_FETCH_TIMEOUT = 10
+TAKEOVER_CONCURRENCY = 20
 
 
 def _load_fingerprints(path: str | None) -> list[TakeoverFingerprint]:
@@ -56,42 +58,64 @@ def _check_stale_cname(host: Host) -> bool:
     return False
 
 
-def _check_takeover(host: Host, fingerprints: list[TakeoverFingerprint]) -> str | None:
-    """Check if CNAME chain matches a takeover fingerprint and target appears unclaimed."""
+def _match_takeover_cname(
+    host: Host, fingerprints: list[TakeoverFingerprint],
+) -> tuple[str | None, list[TakeoverFingerprint]]:
+    """Returns (service_if_nxdomain, fingerprints_needing_http_confirmation)."""
     if not host.dns or not host.dns.cname_chain:
-        return None
+        return None, []
 
     chain_str = " ".join(host.dns.cname_chain).lower()
+    needs_fetch: list[TakeoverFingerprint] = []
 
     for fp in fingerprints:
         matched_cname = any(pat.lower() in chain_str for pat in fp.cname_patterns)
         if not matched_cname:
             continue
-
-        # If the fingerprint is vulnerable on NXDOMAIN and we have no IPs
         if fp.nxdomain_vulnerable and not host.dns.resolved_ips:
-            return fp.service
+            return fp.service, []
+        needs_fetch.append(fp)
 
-        # Try to fetch and check body
-        if _fetch_confirms_takeover(host.fqdn, fp):
-            return fp.service
-
-    return None
+    return None, needs_fetch
 
 
-def _fetch_confirms_takeover(fqdn: str, fp: TakeoverFingerprint) -> bool:
-    """HTTP fetch to confirm the takeover body pattern."""
+async def _fetch_confirms_takeover_async(
+    client: httpx.AsyncClient, fqdn: str, fp: TakeoverFingerprint,
+) -> bool:
     for scheme in ("https", "http"):
         try:
-            with httpx.Client(timeout=TAKEOVER_FETCH_TIMEOUT, follow_redirects=True, verify=False) as client:
-                resp = client.get(f"{scheme}://{fqdn}")
-                body = resp.text[:5000]
-                for pattern in fp.body_patterns:
-                    if pattern.lower() in body.lower():
-                        return True
+            resp = await client.get(f"{scheme}://{fqdn}")
+            body = resp.text[:5000]
+            for pattern in fp.body_patterns:
+                if pattern.lower() in body.lower():
+                    return True
         except Exception:
             continue
     return False
+
+
+async def _check_takeovers_async(
+    candidates: list[tuple[Host, list[TakeoverFingerprint]]],
+) -> dict[str, str]:
+    """Returns {fqdn: service} for confirmed takeovers."""
+    results: dict[str, str] = {}
+    sem = asyncio.Semaphore(TAKEOVER_CONCURRENCY)
+
+    async with httpx.AsyncClient(
+        timeout=TAKEOVER_FETCH_TIMEOUT, follow_redirects=True, verify=False,
+    ) as client:
+        async def check(host: Host, fps: list[TakeoverFingerprint]) -> None:
+            async with sem:
+                for fp in fps:
+                    if await _fetch_confirms_takeover_async(client, host.fqdn, fp):
+                        results[host.fqdn] = fp.service
+                        return
+
+        tasks = [asyncio.create_task(check(host, fps)) for host, fps in candidates]
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    return results
 
 
 def _check_geo_mismatch(host: Host, expected_country: str | None) -> list[str]:
@@ -356,6 +380,7 @@ _FLAG_SEVERITY: dict[str, str] = {
     "http_redirect_permanent": "low",
     "wildcard_dns": "low",
     "sans_new_subdomains": "low",
+    "lower_env_exposed": "medium",
 }
 
 _DOMAIN_STATUS_SEVERITY: dict[str, str] = {
@@ -467,6 +492,31 @@ def _check_cookies(host: Host) -> list[str]:
     return flags
 
 
+_LOWER_ENV_FQDN_PATTERNS = re.compile(
+    r"(?:^|[.\-])"
+    r"(?:dev|develop|development|staging|stage|stg|qa|uat|test|testing|"
+    r"sandbox|preprod|pre-prod|preproduction|internal|local|debug|"
+    r"demo|beta|alpha|canary|nightly|experimental|lab|labs|poc)"
+    r"(?:$|[.\-])",
+    re.I,
+)
+
+_LOWER_ENV_TITLE_PATTERNS = re.compile(
+    r"\b(?:staging|dev(?:elopment)?|qa|uat|test(?:ing)?|sandbox|preprod|"
+    r"pre-prod|internal|demo|beta|alpha)\b",
+    re.I,
+)
+
+
+def _check_lower_env(host: Host) -> bool:
+    if _LOWER_ENV_FQDN_PATTERNS.search(host.fqdn):
+        return True
+    if host.headers and host.headers.page_title:
+        if _LOWER_ENV_TITLE_PATTERNS.search(host.headers.page_title):
+            return True
+    return False
+
+
 def _check_sans_new_subdomains(host: Host, all_fqdns: set[str]) -> bool:
     if not host.tls or not host.tls.sans:
         return False
@@ -496,6 +546,20 @@ def run_analyze(
     majority_asn = _find_majority_asn(in_scope_hosts)
     all_fqdns = set(hosts.keys())
 
+    takeover_results: dict[str, str] = {}
+    candidates: list[tuple[Host, list[TakeoverFingerprint]]] = []
+    for host in in_scope_hosts.values():
+        nxdomain_service, needs_fetch = _match_takeover_cname(host, fingerprints)
+        if nxdomain_service:
+            takeover_results[host.fqdn] = nxdomain_service
+        elif needs_fetch:
+            candidates.append((host, needs_fetch))
+
+    if candidates:
+        logger.info("Checking %d takeover candidates via HTTP (concurrency=%d)", len(candidates), TAKEOVER_CONCURRENCY)
+        confirmed = asyncio.run(_check_takeovers_async(candidates))
+        takeover_results.update(confirmed)
+
     takeover_count = 0
     stale_count = 0
     geo_count = 0
@@ -509,6 +573,7 @@ def run_analyze(
     tls_count = 0
     cors_count = 0
     cookie_count = 0
+    lower_env_count = 0
 
     for host in in_scope_hosts.values():
         if not host.analysis:
@@ -526,7 +591,7 @@ def run_analyze(
             existing_flags.add("stale_cname")
             stale_count += 1
 
-        takeover_service = _check_takeover(host, fingerprints)
+        takeover_service = takeover_results.get(host.fqdn)
         if takeover_service:
             existing_flags.add(f"takeover:{takeover_service}")
             host.analysis.takeover_candidate = True
@@ -606,6 +671,11 @@ def run_analyze(
         if _check_sans_new_subdomains(host, all_fqdns):
             existing_flags.add("sans_new_subdomains")
 
+        # Lower environment exposed publicly
+        if _check_lower_env(host):
+            existing_flags.add("lower_env_exposed")
+            lower_env_count += 1
+
         host.analysis.flags = sorted(existing_flags)
         host.analysis.severity = _max_severity(host.analysis.flags)
 
@@ -615,9 +685,9 @@ def run_analyze(
     logger.info(
         "Analysis complete: %d takeover, %d stale CNAMEs, %d geo, %d private IPs, "
         "%d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, %d CORS, "
-        "%d cookie, %d status, %d version, %d total flagged",
+        "%d cookie, %d status, %d version, %d lower env, %d total flagged",
         takeover_count, stale_count, geo_count, private_count,
         spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
         tls_count, cors_count, cookie_count,
-        status_count, version_count, flagged_total,
+        status_count, version_count, lower_env_count, flagged_total,
     )

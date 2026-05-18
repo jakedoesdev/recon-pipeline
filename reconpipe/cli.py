@@ -132,7 +132,8 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
 @click.option("-i", "--input", "input_path", required=True)
 @click.option("--resolvers", default="1.1.1.1,8.8.8.8,9.9.9.9")
 @click.option("--concurrency", default=50, type=int)
-def reverse(input_path, resolvers, concurrency):
+@click.option("--refresh", is_flag=True, default=False, help="Re-check all IPs, even those with existing PTR data")
+def reverse(input_path, resolvers, concurrency, refresh):
     """Reverse DNS (PTR) lookups on discovered IPs."""
     from .reverse import run_reverse
 
@@ -145,6 +146,7 @@ def reverse(input_path, resolvers, concurrency):
         store_path=Path(input_path),
         resolvers=resolver_list,
         concurrency=concurrency,
+        refresh=refresh,
     )
 
 
@@ -155,7 +157,9 @@ def reverse(input_path, resolvers, concurrency):
 @click.option("--user-agent", default=None)
 @click.option("--expected", default=None, help="Path to expected-headers file")
 @click.option("--force", is_flag=True, default=False, help="Check even unresolved hosts")
-def headers(input_path, scheme, timeout, user_agent, expected, force):
+@click.option("--refresh", is_flag=True, default=False, help="Re-check all hosts, even those with existing header data")
+@click.option("--concurrency", default=20, type=int, help="Max concurrent requests (default 20)")
+def headers(input_path, scheme, timeout, user_agent, expected, force, refresh, concurrency):
     """Security header checks."""
     from .headers import run_headers
 
@@ -170,6 +174,8 @@ def headers(input_path, scheme, timeout, user_agent, expected, force):
         user_agent=user_agent,
         expected_path=expected,
         force=force,
+        refresh=refresh,
+        concurrency=concurrency,
     )
 
 
@@ -177,7 +183,8 @@ def headers(input_path, scheme, timeout, user_agent, expected, force):
 @click.option("-i", "--input", "input_path", required=True)
 @click.option("--allow", default=None, help="Allow-list file")
 @click.option("--deny", default=None, help="Deny-list file")
-def scope(input_path, allow, deny):
+@click.option("--redirect-deny", default=None, help="Deny hosts whose redirect chain matches these patterns")
+def scope(input_path, allow, deny, redirect_deny):
     """Tag hosts with scope status."""
     from .scope import run_scope
 
@@ -189,12 +196,14 @@ def scope(input_path, allow, deny):
         store_path=Path(input_path),
         allow_path=allow,
         deny_path=deny,
+        redirect_deny_path=redirect_deny,
     )
 
 
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
-def rdap(input_path):
+@click.option("--refresh", is_flag=True, default=False, help="Re-check all apex domains, even those with existing RDAP data")
+def rdap(input_path, refresh):
     """RDAP registration lookups (per apex domain)."""
     from .rdap import run_rdap
 
@@ -202,13 +211,15 @@ def rdap(input_path):
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
     )
 
-    run_rdap(store_path=Path(input_path))
+    run_rdap(store_path=Path(input_path), refresh=refresh)
 
 
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
 @click.option("--port", default=443, type=int, help="TLS port to connect to")
-def tls(input_path, port):
+@click.option("--refresh", is_flag=True, default=False, help="Re-check all hosts, even those with existing TLS data")
+@click.option("--concurrency", default=30, type=int, help="Max concurrent connections (default 30)")
+def tls(input_path, port, refresh, concurrency):
     """Collect live TLS certificate details."""
     from .tls import run_tls
 
@@ -216,7 +227,7 @@ def tls(input_path, port):
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
     )
 
-    run_tls(store_path=Path(input_path), port=port)
+    run_tls(store_path=Path(input_path), port=port, refresh=refresh, concurrency=concurrency)
 
 
 @cli.command()
@@ -255,10 +266,11 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
 @click.option("--expected-country", default=None)
 @click.option("--rdap/--no-rdap", default=True)
 @click.option("--enrich-online/--no-enrich-online", default=False)
+@click.option("--refresh", is_flag=True, default=False, help="Re-check hosts that already have data from prior runs")
 def pipeline(
     input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
     resolvers, concurrency, scheme, allow, deny,
-    rdap, expected_country, enrich_online,
+    rdap, expected_country, enrich_online, refresh,
 ):
     """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → analyze."""
     from .analyze import run_analyze
@@ -328,20 +340,20 @@ def pipeline(
 
     # 4. Reverse DNS
     click.echo("━━━ Phase: reverse ━━━", err=True)
-    run_reverse(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+    run_reverse(store_path=store, resolvers=resolver_list, concurrency=concurrency, refresh=refresh)
 
     # 5. Headers
     click.echo("━━━ Phase: headers ━━━", err=True)
-    run_headers(store_path=store, scheme=scheme)
+    run_headers(store_path=store, scheme=scheme, refresh=refresh, concurrency=concurrency)
 
     # 6. TLS
     click.echo("━━━ Phase: tls ━━━", err=True)
-    run_tls(store_path=store)
+    run_tls(store_path=store, refresh=refresh, concurrency=concurrency)
 
     # 7. RDAP
     if rdap:
         click.echo("━━━ Phase: rdap ━━━", err=True)
-        run_rdap(store_path=store)
+        run_rdap(store_path=store, refresh=refresh)
     else:
         click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
 
