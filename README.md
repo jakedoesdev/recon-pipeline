@@ -67,6 +67,52 @@ rp resolve -i store.jsonl --asn-db /path/to/GeoLite2-ASN.mmdb --country-db /path
 
 Download from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) (free account required).
 
+## Logging
+
+### Verbosity
+
+All commands accept root-level logging flags:
+
+```bash
+rp -v resolve -i store.jsonl          # DEBUG — show all DNS queries, HTTP requests, etc.
+rp -q resolve -i store.jsonl          # WARNING only — suppress normal progress output
+rp --log-file run.log resolve -i store.jsonl   # also write DEBUG-level output to file
+```
+
+`-v` and `-q` are mutually exclusive. `--log-file` always writes at DEBUG regardless of terminal verbosity.
+
+### Provenance trail
+
+Every writing command automatically generates a provenance log alongside the store:
+
+```
+store.jsonl                   # the main store
+store.provenance.jsonl        # append-only evidence trail
+```
+
+The provenance file records a timestamped JSONL entry for every network request and decision point — DNS queries, HTTP checks, TLS connections, RDAP lookups, scope classifications, and analysis flags. Each entry includes the raw data that produced the corresponding store field, so a future `rp verify` command can trace any finding back to its source without re-running requests.
+
+Example entries:
+
+```json
+{"ts":"2026-05-17T14:00:01+00:00","module":"resolve","action":"dns_resolve","fqdn":"app.example.com","detail":{"a":["93.184.216.34"],"aaaa":[],"cname_chain":[],"nxdomain":false}}
+{"ts":"2026-05-17T14:00:03+00:00","module":"headers","action":"http_check","fqdn":"app.example.com","detail":{"scheme":"https","url":"https://app.example.com","status":200,"missing":["Content-Security-Policy"]}}
+{"ts":"2026-05-17T14:00:05+00:00","module":"tls","action":"tls_connect","fqdn":"app.example.com","detail":{"subject":"*.example.com","issuer_org":"Let's Encrypt","not_after":"2026-06-30T00:00:00"}}
+```
+
+Query with jq:
+
+```bash
+# All failed HTTP checks
+jq 'select(.action == "http_failed")' store.provenance.jsonl
+
+# Evidence for a specific host
+jq 'select(.fqdn == "app.example.com")' store.provenance.jsonl
+
+# All takeover confirmations
+jq 'select(.action == "takeover_http_confirmed")' store.provenance.jsonl
+```
+
 ## Usage
 
 ### Individual commands (recommended)
@@ -255,6 +301,7 @@ Compares two snapshots and reports:
 | CLI | `reconpipe/cli.py` | Click command group, argument parsing, pipeline orchestration |
 | Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, TlsInfo, ScopeInfo, AnalysisInfo, RdapInfo, ResolvedIp |
 | Store | `reconpipe/store.py` | JSONL read/write with merge-on-FQDN (unions discovery_sources, preserves phase data) |
+| Log | `reconpipe/log.py` | Centralized logging setup, provenance trail (`<store>.provenance.jsonl`) |
 | Config | `reconpipe/config.py` | Loads `config.toml` and `keys.toml`, resolves env var overrides |
 | crt.sh | `reconpipe/enum/crtsh.py` | Certificate Transparency log queries with retry/backoff |
 | BBOT | `reconpipe/enum/bbot.py` | Subprocess wrapper for BBOT, parses JSON output, passes secrets |

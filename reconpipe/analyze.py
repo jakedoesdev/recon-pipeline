@@ -14,6 +14,7 @@ import httpx
 
 from .config import get_key
 from .fingerprints import BUILTIN_FINGERPRINTS, TakeoverFingerprint
+from .log import provenance
 from .models import AnalysisInfo, Host, ResolvedIp
 from .store import is_out_of_scope, load_store, save_store
 
@@ -79,6 +80,8 @@ async def _batch_stale_cname_checks(
         async with sem:
             if await _is_domain_unregistered_async(resolver, final_target):
                 stale.add(fqdn)
+                provenance(module="analyze", action="stale_cname_confirmed", fqdn=fqdn,
+                           cname_target=final_target, unregistered=True)
 
     tasks = [asyncio.create_task(check(fqdn, target)) for fqdn, target in targets_needing_dns]
     if tasks:
@@ -130,6 +133,9 @@ async def _fetch_confirms_takeover_async(
             body = resp.text[:5000]
             for pattern in fp.body_patterns:
                 if pattern.lower() in body.lower():
+                    provenance(module="analyze", action="takeover_http_confirmed",
+                               fqdn=fqdn, service=fp.service, scheme=scheme,
+                               status=resp.status_code, body_pattern=pattern)
                     return True
         except Exception:
             continue
@@ -222,6 +228,8 @@ async def _batch_dns_nxdomain_checks(
                 await resolver.resolve(hostname, "A")
             except dns.resolver.NXDOMAIN:
                 nxdomain.add(hostname)
+                provenance(module="analyze", action="dns_nxdomain",
+                           fqdn=hostname, record_type="A")
             except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
                     dns.exception.Timeout, Exception):
                 pass
@@ -409,6 +417,9 @@ async def _enrich_online_async(hosts: dict[str, Host]) -> None:
                     )
                     if resp.status_code == 200:
                         data = resp.json()
+                        provenance(module="analyze", action="ipinfo_enrich",
+                                   ip=ip, country=data.get("country"),
+                                   org=data.get("org"), city=data.get("city"))
                         for rip in rips:
                             if not rip.country:
                                 rip.country = data.get("country")
@@ -810,6 +821,11 @@ def run_analyze(
 
         host.analysis.flags = sorted(existing_flags)
         host.analysis.severity = _max_severity(host.analysis.flags)
+
+        if host.analysis.flags:
+            provenance(module="analyze", action="analysis_result", fqdn=host.fqdn,
+                       flags=host.analysis.flags, severity=host.analysis.severity,
+                       takeover_candidate=host.analysis.takeover_candidate)
 
     save_store(store_path, hosts)
 

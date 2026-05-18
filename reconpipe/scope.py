@@ -4,6 +4,7 @@ import logging
 import re
 from pathlib import Path
 
+from .log import provenance
 from .models import Host, ScopeInfo
 from .store import load_store, save_store
 
@@ -103,3 +104,8 @@ def run_scope(
     logger.info("Scope complete: %d in, %d out, %d unmatched", in_count, out_count, unmatched_count)
     if redirect_deny_count:
         logger.info("Redirect-deny matched %d hosts", redirect_deny_count)
+    provenance(module="scope", action="scope_complete",
+               total=len(hosts), in_scope=in_count, out_scope=out_count,
+               unmatched=unmatched_count, redirect_denied=redirect_deny_count,
+               allow_rules=len(allow), deny_rules=len(deny),
+               redirect_deny_rules=len(redirect_deny))

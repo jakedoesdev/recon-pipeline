@@ -10,6 +10,7 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 
+from .log import provenance
 from .models import Host, TlsInfo, _now_iso
 from .store import is_out_of_scope, load_store, save_store
 
@@ -85,13 +86,27 @@ async def _get_cert_info(fqdn: str, port: int) -> TlsInfo | None:
         if not der:
             return None
 
-        return _parse_cert(der)
+        info = _parse_cert(der)
+        if info:
+            provenance(
+                module="tls", action="tls_connect", fqdn=fqdn,
+                port=port, subject=info.subject, issuer=info.issuer,
+                issuer_org=info.issuer_org,
+                not_before=info.not_before, not_after=info.not_after,
+                serial=info.serial, sans=info.sans,
+                self_signed=info.self_signed,
+            )
+        return info
 
     except (asyncio.TimeoutError, ConnectionRefusedError, OSError) as e:
         logger.debug("TLS connection failed for %s: %s", fqdn, e)
+        provenance(module="tls", action="tls_failed", fqdn=fqdn,
+                   port=port, error=str(e)[:200])
         return None
     except Exception as e:
         logger.debug("TLS cert parsing failed for %s: %s", fqdn, e)
+        provenance(module="tls", action="tls_failed", fqdn=fqdn,
+                   port=port, error=str(e)[:200])
         return None
 
 

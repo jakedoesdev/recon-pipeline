@@ -11,6 +11,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from ..log import provenance
+
 logger = logging.getLogger(__name__)
 
 CRTSH_URL = "https://crt.sh/"
@@ -55,7 +57,11 @@ def query_crtsh(domain: str) -> list[str]:
             if name:
                 raw_names.add(name)
 
-    return _deduplicate(raw_names, domain)
+    clean = _deduplicate(raw_names, domain)
+    provenance(module="crtsh", action="ct_query", fqdn=domain,
+               raw_entries=len(entries), raw_names=len(raw_names),
+               deduped=len(clean))
+    return clean
 
 
 def _deduplicate(names: set[str], apex: str) -> list[str]:

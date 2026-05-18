@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from ..config import load_keys
+from ..log import provenance
 
 logger = logging.getLogger(__name__)
 
@@ -198,14 +199,28 @@ def run_bbot(
         output_json = _find_output_json(output_dir)
         if output_json:
             logger.info("Parsing BBOT output.json: %s", output_json)
-            return _parse_output_json(output_json, targets)
+            results = _parse_output_json(output_json, targets)
+            provenance(module="bbot", action="bbot_run",
+                       targets=targets, preset=preset_value,
+                       command=" ".join(cmd), output_format="json",
+                       results=len(results))
+            return results
 
         subdomains_txt = _find_subdomains_txt(output_dir)
         if subdomains_txt:
             logger.info("Falling back to subdomains.txt: %s", subdomains_txt)
-            return _parse_subdomains_txt(subdomains_txt, preset)
+            results = _parse_subdomains_txt(subdomains_txt, preset)
+            provenance(module="bbot", action="bbot_run",
+                       targets=targets, preset=preset_value,
+                       command=" ".join(cmd), output_format="txt_fallback",
+                       results=len(results))
+            return results
 
         logger.warning("No BBOT output found in %s", output_dir)
+        provenance(module="bbot", action="bbot_run",
+                   targets=targets, preset=preset_value,
+                   command=" ".join(cmd), output_format="none",
+                   results=0, error="no output found")
         if result.stderr:
             logger.debug("BBOT stderr: %s", result.stderr[:1000])
         return []

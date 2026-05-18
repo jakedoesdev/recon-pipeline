@@ -14,6 +14,7 @@ import dns.name
 import dns.rdatatype
 import dns.resolver
 
+from .log import provenance
 from .models import DnsInfo, Host, ResolvedIp, _now_iso
 from .store import is_out_of_scope, load_store, save_store
 
@@ -99,6 +100,8 @@ async def _resolve_host(
             resolver_used=resolver_str,
             resolved_at=_now_iso(),
         )
+        provenance(module="resolve", action="dns_resolve", fqdn=host.fqdn,
+                   resolver=resolver_str, nxdomain=True)
         return host
 
     a_records = await _resolve_record(resolver, host.fqdn, "A")
@@ -143,6 +146,15 @@ async def _resolve_host(
         nxdomain=False,
         resolver_used=resolver_str,
         resolved_at=_now_iso(),
+    )
+    provenance(
+        module="resolve", action="dns_resolve", fqdn=host.fqdn,
+        resolver=resolver_str, nxdomain=False,
+        a=a_records, aaaa=aaaa_records, cname_chain=cname_chain,
+        txt=txt_records, mx=mx_records, ns=ns_records,
+        resolved_ips=[{"ip": r.ip, "type": r.record_type, "private": r.is_private,
+                       "asn": r.asn, "asn_org": r.asn_org, "country": r.country}
+                      for r in resolved_ips],
     )
     return host
 
@@ -189,6 +201,8 @@ async def _detect_wildcards(
         if len(test_ips) == 3 and test_ips[0] == test_ips[1] == test_ips[2] and test_ips[0]:
             wildcard_map[apex] = test_ips[0]
             logger.info("Wildcard detected for %s -> %s", apex, test_ips[0])
+            provenance(module="resolve", action="wildcard_detected", fqdn=apex,
+                       wildcard_ips=sorted(test_ips[0]))
 
     return wildcard_map
 

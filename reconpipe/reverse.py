@@ -10,6 +10,7 @@ import dns.exception
 import dns.resolver
 import dns.reversename
 
+from .log import provenance
 from .models import Host
 from .store import is_out_of_scope, load_store, save_store
 
@@ -65,6 +66,8 @@ async def _reverse_all(
     async def lookup(ip: str) -> tuple[str, str | None]:
         async with sem:
             hostname = await _ptr_lookup(resolver, ip)
+            if hostname:
+                provenance(module="reverse", action="ptr_found", ip=ip, ptr=hostname)
             return ip, hostname
 
     pending: set[asyncio.Task] = set()

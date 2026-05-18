@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-import sys
 from pathlib import Path
 
 import click
@@ -9,6 +7,7 @@ import tldextract
 
 from .enum.bbot import BbotError, run_bbot
 from .enum.crtsh import query_crtsh
+from .log import close_provenance, init_provenance, setup_logging
 from .models import Host
 from .report import report_combined, report_headers, report_ips, report_subs, report_subs_ips
 from .store import upsert_hosts
@@ -16,8 +15,13 @@ from .store import upsert_hosts
 
 @click.group()
 @click.version_option(package_name="reconpipe")
-def cli():
+@click.option("-v", "--verbose", is_flag=True, default=False, help="Debug logging")
+@click.option("-q", "--quiet", is_flag=True, default=False, help="Warning-only logging")
+@click.option("--log-file", default=None, help="Also log to file (at DEBUG level)")
+def cli(verbose, quiet, log_file):
     """reconpipe — composable recon pipeline."""
+    verbosity = 1 if verbose else (-1 if quiet else 0)
+    setup_logging(verbosity=verbosity, log_file=log_file)
 
 
 @cli.command()
@@ -56,9 +60,7 @@ def report(input_path, view, scope, flagged_only, output, fmt):
 @click.option("-o", "--output", "output_path", required=True, help="JSONL output path")
 def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_path):
     """Subdomain enumeration (BBOT + crt.sh)."""
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
+    init_provenance(Path(output_path))
 
     domains = _read_domains(input_path)
     if not domains:
@@ -93,6 +95,8 @@ def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_pa
     else:
         click.echo("No subdomains discovered.", err=True)
 
+    close_provenance()
+
 
 def _read_domains(path: str) -> list[str]:
     p = Path(path)
@@ -113,10 +117,7 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
     """DNS resolution with private-IP detection."""
     from .resolve import run_resolve
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     resolver_list = [r.strip() for r in resolvers.split(",")]
     run_resolve(
         store_path=Path(input_path),
@@ -126,6 +127,7 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
         asn_db=asn_db,
         country_db=country_db,
     )
+    close_provenance()
 
 
 @cli.command()
@@ -137,10 +139,7 @@ def reverse(input_path, resolvers, concurrency, refresh):
     """Reverse DNS (PTR) lookups on discovered IPs."""
     from .reverse import run_reverse
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     resolver_list = [r.strip() for r in resolvers.split(",")]
     run_reverse(
         store_path=Path(input_path),
@@ -148,6 +147,7 @@ def reverse(input_path, resolvers, concurrency, refresh):
         concurrency=concurrency,
         refresh=refresh,
     )
+    close_provenance()
 
 
 @cli.command()
@@ -163,10 +163,7 @@ def headers(input_path, scheme, timeout, user_agent, expected, force, refresh, c
     """Security header checks."""
     from .headers import run_headers
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     run_headers(
         store_path=Path(input_path),
         scheme=scheme,
@@ -177,6 +174,7 @@ def headers(input_path, scheme, timeout, user_agent, expected, force, refresh, c
         refresh=refresh,
         concurrency=concurrency,
     )
+    close_provenance()
 
 
 @cli.command()
@@ -188,16 +186,14 @@ def scope(input_path, allow, deny, redirect_deny):
     """Tag hosts with scope status."""
     from .scope import run_scope
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     run_scope(
         store_path=Path(input_path),
         allow_path=allow,
         deny_path=deny,
         redirect_deny_path=redirect_deny,
     )
+    close_provenance()
 
 
 @cli.command()
@@ -207,11 +203,9 @@ def rdap(input_path, refresh):
     """RDAP registration lookups (per apex domain)."""
     from .rdap import run_rdap
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     run_rdap(store_path=Path(input_path), refresh=refresh)
+    close_provenance()
 
 
 @cli.command()
@@ -223,11 +217,9 @@ def tls(input_path, port, refresh, concurrency):
     """Collect live TLS certificate details."""
     from .tls import run_tls
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     run_tls(store_path=Path(input_path), port=port, refresh=refresh, concurrency=concurrency)
+    close_provenance()
 
 
 @cli.command()
@@ -239,16 +231,14 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
     """Anomaly detection and takeover checks."""
     from .analyze import run_analyze
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
+    init_provenance(Path(input_path))
     run_analyze(
         store_path=Path(input_path),
         expected_country=expected_country,
         fingerprints_path=takeover_fingerprints,
         enrich_online=enrich_online,
     )
+    close_provenance()
 
 
 @cli.command()
@@ -281,11 +271,8 @@ def pipeline(
     from .scope import run_scope
     from .tls import run_tls
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr
-    )
-
     store = Path(output_path)
+    init_provenance(store)
 
     # 1. Enum
     click.echo("━━━ Phase: enum ━━━", err=True)
@@ -366,6 +353,7 @@ def pipeline(
     )
 
     click.echo(f"━━━ Pipeline complete: {store} ━━━", err=True)
+    close_provenance()
 
 
 @cli.command()

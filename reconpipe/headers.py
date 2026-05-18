@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from .log import provenance
 from .models import HeaderInfo, Host, _now_iso
 from .store import is_out_of_scope, load_store, save_store
 
@@ -158,7 +159,7 @@ async def _native_check(
         cookies = _parse_cookies(resp)
         body_snippet = body[:5000] if body else None
 
-        return HeaderInfo(
+        info = HeaderInfo(
             url_checked=str(resp.url),
             status_code=resp.status_code,
             redirect_chain=redirect_chain,
@@ -173,15 +174,32 @@ async def _native_check(
             grade=None,
             checked_at=_now_iso(),
         )
+        provenance(
+            module="headers", action="http_check", fqdn=fqdn,
+            scheme=scheme, url=str(resp.url), status=resp.status_code,
+            redirect_chain=redirect_chain,
+            response_headers={k: v[:500] for k, v in resp.headers.items()},
+            title=page_title, generator=meta_generator,
+            technologies=technologies,
+            cookies=[c["name"] for c in cookies],
+            missing=missing,
+        )
+        return info
 
     except httpx.TimeoutException:
         logger.debug("Timeout connecting to %s", url)
+        provenance(module="headers", action="http_failed", fqdn=fqdn,
+                   scheme=scheme, url=url, error="timeout")
         return None
     except httpx.ConnectError:
         logger.debug("Connection failed to %s", url)
+        provenance(module="headers", action="http_failed", fqdn=fqdn,
+                   scheme=scheme, url=url, error="connection_refused")
         return None
     except Exception as e:
         logger.debug("Native check failed for %s: %s", url, e)
+        provenance(module="headers", action="http_failed", fqdn=fqdn,
+                   scheme=scheme, url=url, error=str(e)[:200])
         return None
 
 

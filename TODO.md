@@ -12,7 +12,7 @@
 
 6. **Selective refresh** — `--refresh-host <fqdn>` or `--refresh-host <file>` to re-check specific hosts instead of all-or-nothing. Useful for re-checking a single host after a change without re-running the full module.
 
-7. **Structured logging** — Configurable log levels (`-v` for DEBUG, `-q` for WARNING). Log to file option (`--log-file`). Consistent structured format across all modules. Currently each subcommand sets up its own `logging.basicConfig` independently.
+7. ~~**Structured logging**~~ — Done. Centralized `setup_logging` in `log.py` with `-v` (DEBUG), `-q` (WARNING), and `--log-file` (file at DEBUG level) on the root CLI group. All per-subcommand `logging.basicConfig` removed. Provenance trail (`<store>.provenance.jsonl`) records raw evidence at every network request and decision point for future `rp verify` support.
 
 8. ~~**Redirect URL tracking and scope filtering**~~ — Done. `headers` records full `redirect_chain`. `rp scope --redirect-deny <file>` excludes hosts whose redirect chain matches substring or regex patterns.
 

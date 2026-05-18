@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 
+from .log import provenance
 from .models import RdapInfo, _now_iso
 from .store import is_out_of_scope, load_store, save_store
 
@@ -50,6 +51,8 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
             resp = client.get(url)
             if resp.status_code != 200:
                 logger.debug("RDAP %d for %s", resp.status_code, apex)
+                provenance(module="rdap", action="rdap_failed", fqdn=apex,
+                           url=url, status_code=resp.status_code)
                 return None
 
             data = resp.json()
@@ -73,7 +76,7 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
             statuses = data.get("status", [])
             dnssec = _has_dnssec(data)
 
-            return RdapInfo(
+            info = RdapInfo(
                 registrar=registrar,
                 registered_at=registered,
                 expires_at=expires,
@@ -82,9 +85,19 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
                 dnssec=dnssec,
                 queried_at=_now_iso(),
             )
+            provenance(
+                module="rdap", action="rdap_query", fqdn=apex,
+                url=url, status_code=resp.status_code,
+                registrar=registrar, registered_at=registered,
+                expires_at=expires, statuses=statuses,
+                nameservers=nameservers, dnssec=dnssec,
+            )
+            return info
 
     except Exception as e:
         logger.debug("RDAP lookup failed for %s: %s", apex, e)
+        provenance(module="rdap", action="rdap_failed", fqdn=apex,
+                   url=f"{RDAP_BOOTSTRAP}{apex}", error=str(e)[:200])
         return None
 
 
