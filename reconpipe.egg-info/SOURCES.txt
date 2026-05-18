@@ -1,6 +1,7 @@
 .gitignore
 GUIDE.md
 README.md
+TODO.md
 pyproject.toml
 recon-pipe-design.md
 reconpipe/__init__.py

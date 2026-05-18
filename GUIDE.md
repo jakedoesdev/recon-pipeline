@@ -231,7 +231,7 @@ rpq | jq '.fqdn as $f | select(.headers != null and (.headers.url_checked | cont
 **Hosts missing a specific security header:**
 ```bash
 # Missing HSTS
-rpq | jq 'select(.headers.missing[]? == "Strict-Transport-Security")'
+rpq | jq 'select(.headers != null and ([.headers.missing[]?] | any(. == "Strict-Transport-Security")))'
 
 # Missing multiple specific headers
 rpq | jq 'select(.headers != null and ([.headers.missing[]?] | any(. == "Strict-Transport-Security" or . == "X-Content-Type-Options")))'
@@ -304,7 +304,7 @@ rpq | jq -r '.headers.technologies[]?' | sort | uniq -c | sort -rn
 
 **Hosts with a meta generator tag:**
 ```bash
-rpq | jq 'select(.headers.meta_generator != null) | {fqdn, generator: .headers.meta_generator}'
+rpq | jq 'select(.headers != null and .headers.meta_generator != null) | {fqdn, generator: .headers.meta_generator}'
 ```
 
 ### Cookie and CORS queries
@@ -321,7 +321,7 @@ rpq | jq 'select([.analysis.flags[]?] | any(. == "cors_wildcard_credentials"))'
 
 **List all cookies and their security attributes:**
 ```bash
-rpq | jq 'select(.headers.cookies | length > 0) | {fqdn, cookies: .headers.cookies}'
+rpq | jq 'select(.headers != null and (.headers.cookies | length > 0)) | {fqdn, cookies: .headers.cookies}'
 ```
 
 ### TLS certificate queries
@@ -375,38 +375,38 @@ rpq | jq 'select([.analysis.flags[]?] | any(. == "lower_env_exposed")) | {fqdn, 
 
 **Hosts that redirected (with full redirect chain):**
 ```bash
-rpq | jq 'select(.headers.redirect_chain | length > 0) | {fqdn, chain: .headers.redirect_chain}'
+rpq | jq 'select(.headers != null and (.headers.redirect_chain | length > 0)) | {fqdn, chain: .headers.redirect_chain}'
 ```
 
 **Find all unique redirect destinations (useful for building redirect-deny lists):**
 ```bash
-rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort -u
+rpq | jq -r 'select(.headers != null) | .headers.redirect_chain[-1]? // empty' | sort -u
 ```
 
 **Count hosts per redirect destination (find mass-redirect patterns):**
 ```bash
-rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort | uniq -c | sort -rn | head -20
+rpq | jq -r 'select(.headers != null) | .headers.redirect_chain[-1]? // empty' | sort | uniq -c | sort -rn | head -20
 ```
 
 **Hosts redirecting to a specific domain:**
 ```bash
-rpq | jq 'select([.headers.redirect_chain[]?] | any(test("microsoftonline.com")))'
-rpq | jq 'select([.headers.redirect_chain[]?] | any(test("okta.com")))'
+rpq | jq 'select(.headers != null and ([.headers.redirect_chain[]?] | any(test("microsoftonline.com"))))'
+rpq | jq 'select(.headers != null and ([.headers.redirect_chain[]?] | any(test("okta.com"))))'
 ```
 
 **Hosts redirecting off-domain (final URL doesn't contain the original FQDN):**
 ```bash
-rpq | jq '.fqdn as $f | select(.headers.redirect_chain | length > 0 and (.headers.redirect_chain[-1] | contains($f) | not)) | {fqdn, final: .headers.redirect_chain[-1]}'
+rpq | jq '.fqdn as $f | select(.headers != null and (.headers.redirect_chain | length > 0) and (.headers.redirect_chain[-1] | contains($f) | not)) | {fqdn, final: .headers.redirect_chain[-1]}'
 ```
 
 **Hosts with long redirect chains (3+ hops):**
 ```bash
-rpq | jq 'select(.headers.redirect_chain | length >= 3) | {fqdn, hops: (.headers.redirect_chain | length), chain: .headers.redirect_chain}'
+rpq | jq 'select(.headers != null and (.headers.redirect_chain | length >= 3)) | {fqdn, hops: (.headers.redirect_chain | length), chain: .headers.redirect_chain}'
 ```
 
 **HTTP-to-HTTPS redirects (initial hop is HTTP, lands on HTTPS):**
 ```bash
-rpq | jq 'select(.headers.redirect_chain | length > 0 and (.[0] | test("^http://")) and (.[-1] | test("^https://")))'
+rpq | jq 'select(.headers != null and (.headers.redirect_chain | length > 0) and (.headers.redirect_chain[0] | test("^http://")) and (.headers.redirect_chain[-1] | test("^https://")))'
 ```
 
 ### Body snippet queries
@@ -742,6 +742,7 @@ rpq | jq 'select(.tls != null) | {fqdn, subject: .tls.subject, san_count: (.tls.
 **Hosts with login pages that are missing security headers:**
 ```bash
 rpq | jq 'select(
+  .headers != null and
   (.headers.page_title? // "" | test("login|sign.in|auth"; "i")) and
   (.headers.missing | length > 2)
 ) | {fqdn, title: .headers.page_title, missing: .headers.missing}'
@@ -843,7 +844,7 @@ After `rp headers`, identify mass-redirect patterns and filter them out:
 
 ```bash
 # 1. Find the most common redirect destinations
-rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort | uniq -c | sort -rn | head -20
+rpq | jq -r 'select(.headers != null) | .headers.redirect_chain[-1]? // empty' | sort | uniq -c | sort -rn | head -20
 
 # 2. Create a redirect-deny file with the noisy destinations
 cat > redirect-deny.txt <<EOF
@@ -870,7 +871,7 @@ nmap -iL live-ips.txt -sV -oA scan
 rp report -i /tmp/store.jsonl --view subs --scope in -o inscope-subs.txt
 
 # Extract URLs for web scanning (httpx/nuclei/etc.)
-rpq | jq -r 'select(.headers.url_checked != "") | .headers.url_checked' > live-urls.txt
+rpq | jq -r 'select(.headers != null and .headers.url_checked != "") | .headers.url_checked' > live-urls.txt
 
 # Extract hosts with specific technologies for targeted scanning
 rpq | jq -r 'select([.headers.technologies[]?] | any(. == "WordPress")) | .headers.url_checked' > wordpress-targets.txt
