@@ -40,6 +40,7 @@ class HeaderInfo:
     meta_generator: str | None = None
     technologies: list[str] = field(default_factory=list)
     cookies: list[dict] = field(default_factory=list)
+    body_snippet: str | None = None
     source: str = "native"
     grade: str | None = None
     checked_at: str = ""

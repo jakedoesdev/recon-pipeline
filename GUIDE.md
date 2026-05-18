@@ -68,6 +68,7 @@ Populated by `rp headers`. Contains the results of HTTP security header probing.
 | `meta_generator` | string or null | The `<meta name="generator">` content, which CMS and frameworks typically set (e.g. `"WordPress 6.4"`, `"Drupal 10"`, `"Hugo 0.121.0"`). Null if not present. |
 | `technologies` | list | Technologies detected in the response body via pattern matching. Detects: WordPress, Drupal, Joomla, Next.js, Nuxt.js, Angular, React, Shopify, Squarespace, Wix, Confluence, Jira, GitLab, Grafana, Jenkins, Kibana, phpMyAdmin, nginx, Apache Tomcat, IIS, Laravel, Gatsby, HubSpot. |
 | `cookies` | list | Cookies set by the response, with security attribute analysis. Each entry is `{"name": "session_id", "secure": true, "httponly": true, "samesite": "Strict"}`. Missing attributes are flagged by analyze. |
+| `body_snippet` | string or null | First 5,000 characters of the response body. Used by analyze for takeover confirmation without re-fetching. Null if no body was returned. |
 | `source` | string | Always `"native"` (direct HTTP request). |
 | `grade` | string or null | Reserved for future use. |
 | `checked_at` | string | ISO 8601 timestamp of the header check. |

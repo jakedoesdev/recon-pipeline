@@ -58,10 +58,19 @@ def _check_stale_cname(host: Host) -> bool:
     return False
 
 
+def _check_body_patterns(body: str, fp: TakeoverFingerprint) -> bool:
+    body_lower = body.lower()
+    return any(pattern.lower() in body_lower for pattern in fp.body_patterns)
+
+
 def _match_takeover_cname(
     host: Host, fingerprints: list[TakeoverFingerprint],
 ) -> tuple[str | None, list[TakeoverFingerprint]]:
-    """Returns (service_if_nxdomain, fingerprints_needing_http_confirmation)."""
+    """Returns (service_if_confirmed, fingerprints_needing_http_fetch).
+
+    Checks NXDOMAIN first, then existing body_snippet from headers.
+    Only returns fingerprints needing a live fetch if no stored body is available.
+    """
     if not host.dns or not host.dns.cname_chain:
         return None, []
 
@@ -74,7 +83,11 @@ def _match_takeover_cname(
             continue
         if fp.nxdomain_vulnerable and not host.dns.resolved_ips:
             return fp.service, []
-        needs_fetch.append(fp)
+        if host.headers and host.headers.body_snippet:
+            if _check_body_patterns(host.headers.body_snippet, fp):
+                return fp.service, []
+        else:
+            needs_fetch.append(fp)
 
     return None, needs_fetch
 

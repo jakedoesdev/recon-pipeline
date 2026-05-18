@@ -156,6 +156,7 @@ async def _native_check(
         body = resp.text[:15000]
         page_title, meta_generator, technologies = _parse_body(body)
         cookies = _parse_cookies(resp)
+        body_snippet = body[:5000] if body else None
 
         return HeaderInfo(
             url_checked=str(resp.url),
@@ -167,6 +168,7 @@ async def _native_check(
             meta_generator=meta_generator,
             technologies=technologies,
             cookies=cookies,
+            body_snippet=body_snippet,
             source="native",
             grade=None,
             checked_at=_now_iso(),
