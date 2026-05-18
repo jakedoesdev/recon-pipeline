@@ -17,3 +17,5 @@
 8. ~~**Redirect URL tracking and scope filtering**~~ — Done. `headers` records full `redirect_chain`. `rp scope --redirect-deny <file>` excludes hosts whose redirect chain matches substring or regex patterns.
 
 9. ~~**Flag exposed lower environments**~~ — Done. `analyze` flags `lower_env_exposed` (medium severity) via FQDN patterns (dev, staging, qa, uat, test, sandbox, preprod, internal, etc.) and page title keywords.
+
+10. **Verify command** — `rp verify` takes a host and field (e.g. `rp verify -i store.jsonl --host app.example.com --field tls`) and re-runs the commands needed to reproduce that field's output. Saves verbose logging, full command outputs, raw responses, and intermediate data that the normal pipeline discards. Useful for validating findings before including them in a report, debugging unexpected results, and producing evidence artifacts.
