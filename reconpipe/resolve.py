@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import random
+import signal
 import string
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from .store import is_out_of_scope, load_store, save_store
 logger = logging.getLogger(__name__)
 
 CNAME_DEPTH_LIMIT = 10
+FLUSH_INTERVAL = 25
 
 
 def _is_private(ip_str: str) -> bool:
@@ -193,12 +195,22 @@ async def _detect_wildcards(
 
 async def _resolve_all(
     hosts: dict[str, Host],
+    store_path: Path,
     resolvers: list[str],
     concurrency: int,
     wildcard_detect: bool,
     asn_db_path: str | None,
     country_db_path: str | None,
-) -> dict[str, Host]:
+) -> tuple[dict[str, Host], bool]:
+    interrupted = False
+
+    def _handle_sigint(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+        logger.warning("Interrupt received — finishing in-flight queries and saving progress")
+
+    prev_handler = signal.signal(signal.SIGINT, _handle_sigint)
+
     resolver = dns.asyncresolver.Resolver()
     resolver.nameservers = resolvers
     resolver.timeout = 5
@@ -232,31 +244,47 @@ async def _resolve_all(
 
     # Resolve all hosts with concurrency limit (skip denied hosts)
     sem = asyncio.Semaphore(concurrency)
-    in_scope_hosts = {fqdn: h for fqdn, h in hosts.items() if not is_out_of_scope(h)}
+    in_scope_hosts = [h for h in hosts.values() if not is_out_of_scope(h)]
+    total = len(in_scope_hosts)
 
     async def resolve_with_sem(host: Host) -> Host:
         async with sem:
             return await _resolve_host(resolver, host, resolver_str, asn_lookup, country_lookup)
 
-    tasks = [resolve_with_sem(host) for host in in_scope_hosts.values()]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    pending: set[asyncio.Task] = set()
+    for host in in_scope_hosts:
+        if interrupted:
+            break
+        task = asyncio.create_task(resolve_with_sem(host))
+        pending.add(task)
 
-    for result in results:
-        if isinstance(result, Exception):
-            logger.warning("Resolution error: %s", result)
-            continue
-        host = result
-        # Flag wildcard matches
-        if host.dns and not host.dns.nxdomain and host.apex in wildcard_map:
-            wildcard_ips = wildcard_map[host.apex]
-            host_ips = {r.ip for r in host.dns.resolved_ips}
-            if host_ips and host_ips.issubset(wildcard_ips):
-                if not host.analysis:
-                    from .models import AnalysisInfo
-                    host.analysis = AnalysisInfo()
-                if "wildcard_dns" not in host.analysis.flags:
-                    host.analysis.flags.append("wildcard_dns")
-        hosts[host.fqdn] = host
+    checked = 0
+    while pending:
+        done, pending = await asyncio.wait(
+            pending, return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            try:
+                host = task.result()
+                # Flag wildcard matches
+                if host.dns and not host.dns.nxdomain and host.apex in wildcard_map:
+                    wildcard_ips = wildcard_map[host.apex]
+                    host_ips = {r.ip for r in host.dns.resolved_ips}
+                    if host_ips and host_ips.issubset(wildcard_ips):
+                        if not host.analysis:
+                            from .models import AnalysisInfo
+                            host.analysis = AnalysisInfo()
+                        if "wildcard_dns" not in host.analysis.flags:
+                            host.analysis.flags.append("wildcard_dns")
+                hosts[host.fqdn] = host
+            except Exception as e:
+                logger.warning("Resolution error: %s", e)
+            checked += 1
+            if checked % FLUSH_INTERVAL == 0:
+                logger.info("Progress: %d/%d resolved", checked, total)
+                save_store(store_path, hosts)
+
+    signal.signal(signal.SIGINT, prev_handler)
 
     # Cleanup
     if asn_lookup:
@@ -264,7 +292,7 @@ async def _resolve_all(
     if country_lookup:
         country_lookup.close()
 
-    return hosts
+    return hosts, interrupted
 
 
 def run_resolve(
@@ -280,12 +308,14 @@ def run_resolve(
         logger.warning("No hosts in store to resolve")
         return
 
-    skipped = sum(1 for h in hosts.values() if is_out_of_scope(h))
+    in_scope_count = sum(1 for h in hosts.values() if not is_out_of_scope(h))
+    skipped = len(hosts) - in_scope_count
     logger.info("Resolving %d hosts, %d skipped as out-of-scope (concurrency=%d, resolvers=%s)",
-                len(hosts) - skipped, skipped, concurrency, resolvers)
+                in_scope_count, skipped, concurrency, resolvers)
 
-    hosts = asyncio.run(_resolve_all(
+    hosts, interrupted = asyncio.run(_resolve_all(
         hosts=hosts,
+        store_path=store_path,
         resolvers=resolvers,
         concurrency=concurrency,
         wildcard_detect=wildcard_detect,
@@ -307,7 +337,13 @@ def run_resolve(
         if h.analysis and "wildcard_dns" in h.analysis.flags
     )
 
-    logger.info(
-        "Resolution complete: %d resolved, %d NXDOMAIN, %d with private IPs, %d wildcard-flagged",
-        resolved_count, nxdomain_count, private_count, wildcard_count,
-    )
+    if interrupted:
+        logger.info(
+            "Resolution interrupted — progress saved. %d resolved, %d NXDOMAIN, %d with private IPs, %d wildcard-flagged",
+            resolved_count, nxdomain_count, private_count, wildcard_count,
+        )
+    else:
+        logger.info(
+            "Resolution complete: %d resolved, %d NXDOMAIN, %d with private IPs, %d wildcard-flagged",
+            resolved_count, nxdomain_count, private_count, wildcard_count,
+        )

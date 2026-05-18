@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from pathlib import Path
 
 import dns.asyncresolver
@@ -9,10 +10,12 @@ import dns.exception
 import dns.resolver
 import dns.reversename
 
-from .models import DnsInfo, Host, ResolvedIp, _now_iso
+from .models import Host
 from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
+
+FLUSH_INTERVAL = 25
 
 
 async def _ptr_lookup(
@@ -34,11 +37,22 @@ async def _ptr_lookup(
 
 
 async def _reverse_all(
-    ips: dict[str, str],
+    ips: set[str],
+    hosts: dict[str, Host],
+    store_path: Path,
     resolvers: list[str],
     concurrency: int,
-) -> dict[str, str]:
-    """Returns {ip: ptr_hostname} for successful lookups."""
+) -> tuple[dict[str, str], bool]:
+    """Returns ({ip: ptr_hostname}, interrupted) for successful lookups."""
+    interrupted = False
+
+    def _handle_sigint(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+        logger.warning("Interrupt received — finishing in-flight lookups and saving progress")
+
+    prev_handler = signal.signal(signal.SIGINT, _handle_sigint)
+
     resolver = dns.asyncresolver.Resolver()
     resolver.nameservers = resolvers
     resolver.timeout = 5
@@ -46,19 +60,50 @@ async def _reverse_all(
 
     sem = asyncio.Semaphore(concurrency)
     results: dict[str, str] = {}
+    total = len(ips)
 
     async def lookup(ip: str) -> tuple[str, str | None]:
         async with sem:
             hostname = await _ptr_lookup(resolver, ip)
             return ip, hostname
 
-    tasks = [lookup(ip) for ip in ips]
-    for coro in asyncio.as_completed(tasks):
-        ip, hostname = await coro
-        if hostname:
-            results[ip] = hostname
+    pending: set[asyncio.Task] = set()
+    for ip in ips:
+        if interrupted:
+            break
+        task = asyncio.create_task(lookup(ip))
+        pending.add(task)
 
-    return results
+    checked = 0
+    while pending:
+        done, pending = await asyncio.wait(
+            pending, return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            try:
+                ip, hostname = task.result()
+                if hostname:
+                    results[ip] = hostname
+            except Exception as e:
+                logger.debug("PTR task failed: %s", e)
+            checked += 1
+            if checked % FLUSH_INTERVAL == 0:
+                logger.info("Progress: %d/%d IPs checked", checked, total)
+                _apply_ptr_results(hosts, results)
+                save_store(store_path, hosts)
+
+    signal.signal(signal.SIGINT, prev_handler)
+    return results, interrupted
+
+
+def _apply_ptr_results(hosts: dict[str, Host], ptr_map: dict[str, str]) -> None:
+    for host in hosts.values():
+        if not host.dns or host.dns.nxdomain:
+            continue
+        for rip in host.dns.resolved_ips:
+            ptr = ptr_map.get(rip.ip)
+            if ptr:
+                rip.ptr = ptr
 
 
 def run_reverse(
@@ -97,21 +142,18 @@ def run_reverse(
 
     logger.info("Reverse-resolving %d unique public IPs (concurrency=%d)", len(unique_ips), concurrency)
 
-    ptr_map = asyncio.run(_reverse_all(
+    ptr_map, interrupted = asyncio.run(_reverse_all(
         ips=unique_ips,
+        hosts=hosts,
+        store_path=store_path,
         resolvers=resolvers,
         concurrency=concurrency,
     ))
 
-    logger.info("PTR results: %d/%d IPs have reverse DNS", len(ptr_map), len(unique_ips))
-
-    # Annotate existing hosts with PTR data
-    for host in hosts.values():
-        if not host.dns or host.dns.nxdomain:
-            continue
-        for rip in host.dns.resolved_ips:
-            ptr = ptr_map.get(rip.ip)
-            if ptr:
-                rip.ptr = ptr
-
+    _apply_ptr_results(hosts, ptr_map)
     save_store(store_path, hosts)
+
+    if interrupted:
+        logger.info("Reverse DNS interrupted — progress saved. %d/%d IPs have PTR records", len(ptr_map), len(unique_ips))
+    else:
+        logger.info("PTR results: %d/%d IPs have reverse DNS", len(ptr_map), len(unique_ips))

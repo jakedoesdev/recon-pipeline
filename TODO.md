@@ -2,13 +2,13 @@
 
 1. ~~**Skip already-processed hosts by default**~~ — Done. `headers`, `tls`, `rdap`, and `reverse` skip hosts with existing data. `--refresh` flag overrides.
 
-2. **Graceful exits with intermediate saves** — ~~`headers` and `tls` done~~ (periodic flush every 25 hosts + SIGINT handler). Still needed for `reverse` and `resolve`.
+2. ~~**Graceful exits with intermediate saves**~~ — Done. All network modules (`headers`, `tls`, `resolve`, `reverse`) have periodic flush every 25 hosts/IPs + SIGINT handler that finishes in-flight requests and saves progress.
 
 3. **Parallel execution for later modules** — `headers`, `tls`, `rdap`, and `reverse` write to different fields and could run concurrently after `resolve`. Requires field-level merging on write (each module only touches its own slice of the record).
 
 4. **Built-in query system** — Replace complex jq one-liners with `rp query` supporting common filters as flags (e.g. `--flag stale_cname`, `--apex tesla.com`, `--ip 1.2.3.4`, `--severity critical,high`). Consider SQLite export as an alternative for ad-hoc queries.
 
-5. **Progress indicators for long modules** — Periodic log output during `resolve` (currently silent until completion). `headers` and `tls` already log every 25 hosts but `resolve` gives no feedback while processing.
+5. ~~**Progress indicators for long modules**~~ — Done. All network modules (`resolve`, `reverse`, `headers`, `tls`) log progress every 25 hosts/IPs.
 
 6. **Selective refresh** — `--refresh-host <fqdn>` or `--refresh-host <file>` to re-check specific hosts instead of all-or-nothing. Useful for re-checking a single host after a change without re-running the full module.
 
