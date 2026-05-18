@@ -366,6 +366,13 @@ rpq | jq 'select([.analysis.flags[]?] | any(. == "sans_new_subdomains"))'
 rpq | jq 'select([.analysis.flags[]?] | any(. == "lower_env_exposed"))'
 ```
 
+**Lower environments with details (fqdn, title, status code):**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "lower_env_exposed")) | {fqdn, title: .headers.page_title, status: .headers.status_code, technologies: .headers.technologies}'
+```
+
+### Redirect chain queries
+
 **Hosts that redirected (with full redirect chain):**
 ```bash
 rpq | jq 'select(.headers.redirect_chain | length > 0) | {fqdn, chain: .headers.redirect_chain}'
@@ -374,6 +381,60 @@ rpq | jq 'select(.headers.redirect_chain | length > 0) | {fqdn, chain: .headers.
 **Find all unique redirect destinations (useful for building redirect-deny lists):**
 ```bash
 rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort -u
+```
+
+**Count hosts per redirect destination (find mass-redirect patterns):**
+```bash
+rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort | uniq -c | sort -rn | head -20
+```
+
+**Hosts redirecting to a specific domain:**
+```bash
+rpq | jq 'select([.headers.redirect_chain[]?] | any(test("microsoftonline.com")))'
+rpq | jq 'select([.headers.redirect_chain[]?] | any(test("okta.com")))'
+```
+
+**Hosts redirecting off-domain (final URL doesn't contain the original FQDN):**
+```bash
+rpq | jq '.fqdn as $f | select(.headers.redirect_chain | length > 0 and (.headers.redirect_chain[-1] | contains($f) | not)) | {fqdn, final: .headers.redirect_chain[-1]}'
+```
+
+**Hosts with long redirect chains (3+ hops):**
+```bash
+rpq | jq 'select(.headers.redirect_chain | length >= 3) | {fqdn, hops: (.headers.redirect_chain | length), chain: .headers.redirect_chain}'
+```
+
+**HTTP-to-HTTPS redirects (initial hop is HTTP, lands on HTTPS):**
+```bash
+rpq | jq 'select(.headers.redirect_chain | length > 0 and (.[0] | test("^http://")) and (.[-1] | test("^https://")))'
+```
+
+### Body snippet queries
+
+**Search response bodies for a keyword:**
+```bash
+rpq | jq 'select(.headers.body_snippet? // "" | test("password"; "i")) | .fqdn'
+rpq | jq 'select(.headers.body_snippet? // "" | test("api[_-]?key"; "i")) | .fqdn'
+```
+
+**Hosts with error messages in the body:**
+```bash
+rpq | jq 'select(.headers.body_snippet? // "" | test("stack trace|exception|traceback|debug"; "i")) | {fqdn, title: .headers.page_title}'
+```
+
+**Hosts with login/auth pages:**
+```bash
+rpq | jq 'select(.headers.body_snippet? // "" | test("login|sign.in|username|password"; "i")) | {fqdn, title: .headers.page_title, status: .headers.status_code}'
+```
+
+**Hosts with directory listings:**
+```bash
+rpq | jq 'select(.headers.body_snippet? // "" | test("Index of /|directory listing|Parent Directory"; "i")) | .fqdn'
+```
+
+**Hosts exposing environment or config details:**
+```bash
+rpq | jq 'select(.headers.body_snippet? // "" | test("DATABASE_URL|REDIS_URL|SECRET_KEY|AWS_ACCESS"; "i")) | .fqdn'
 ```
 
 ### DNS-specific queries
@@ -629,6 +690,124 @@ rpq | jq '.fqdn as $f | select(
 )'
 ```
 
+### Infrastructure mapping
+
+**Group hosts by ASN (see which networks are in use):**
+```bash
+rpq | jq -r '.dns.resolved_ips[]? | select(.asn != null) | "\(.asn)\t\(.asn_org // "unknown")"' | sort -u | sort -t$'\t' -k1 -n
+```
+
+**Count hosts per ASN org:**
+```bash
+rpq | jq -r '[.dns.resolved_ips[]? | select(.asn_org != null) | .asn_org] | unique[]' | sort | uniq -c | sort -rn
+```
+
+**Count hosts per country:**
+```bash
+rpq | jq -r '[.dns.resolved_ips[]? | select(.country != null) | .country] | unique[]' | sort | uniq -c | sort -rn
+```
+
+**Hosts sharing the same IP (co-hosted/virtual hosts):**
+```bash
+rpq | jq -r '.dns.resolved_ips[]?.ip' | sort | uniq -c | sort -rn | awk '$1 > 1' | while read count ip; do echo "=== $ip ($count hosts) ==="; rpq | jq -r "select([.dns.resolved_ips[]?.ip] | any(. == \"$ip\")) | .fqdn"; done
+```
+
+**Map IP to all FQDNs, PTR, and ASN (full IP context):**
+```bash
+rpq | jq -r '[.dns.resolved_ips[]? | select(.ip != null) | "\(.ip)\t\(.ptr // "-")\t\(.asn_org // "-")"] | .[]' | sort -u -t$'\t' -k1,1
+```
+
+**CNAME chain providers — what third-party services are in use:**
+```bash
+rpq | jq -r '.dns.cname_chain[]?' | sed 's/.*\.\([^.]*\.[^.]*\)$/\1/' | sort | uniq -c | sort -rn
+```
+
+**Hosts per registrar (via RDAP):**
+```bash
+rpq | jq -r 'select(.rdap != null) | "\(.apex)\t\(.rdap.registrar // "unknown")"' | sort -u -t$'\t' -k2 | cut -f2 | uniq -c | sort -rn
+```
+
+**Hosts per TLS issuer org:**
+```bash
+rpq | jq -r 'select(.tls != null) | .tls.issuer_org // "unknown"' | sort | uniq -c | sort -rn
+```
+
+**Wildcard vs single-domain certificates:**
+```bash
+rpq | jq 'select(.tls != null) | {fqdn, subject: .tls.subject, san_count: (.tls.sans | length), wildcard: ([.tls.sans[]? | select(startswith("*."))] | length > 0)}'
+```
+
+### Cross-field hunting
+
+**Hosts with login pages that are missing security headers:**
+```bash
+rpq | jq 'select(
+  (.headers.page_title? // "" | test("login|sign.in|auth"; "i")) and
+  (.headers.missing | length > 2)
+) | {fqdn, title: .headers.page_title, missing: .headers.missing}'
+```
+
+**Lower environments with cookies missing Secure flag:**
+```bash
+rpq | jq 'select(
+  ([.analysis.flags[]?] | any(. == "lower_env_exposed")) and
+  ([.analysis.flags[]?] | any(. == "cookies_missing_secure"))
+) | {fqdn, title: .headers.page_title, flags: .analysis.flags}'
+```
+
+**Hosts on non-CDN ASNs with self-signed certs (likely internal services):**
+```bash
+rpq | jq 'select(
+  ([.analysis.flags[]?] | any(. == "cert_self_signed")) and
+  ([.dns.resolved_ips[]? | select(.asn != null) | .asn] | all(. != 13335 and . != 54113 and . != 20940 and . != 16509))
+) | {fqdn, asn_org: .dns.resolved_ips[0].asn_org, subject: .tls.subject}'
+```
+
+**Hosts responding 200 with no CNAME (direct infrastructure, not behind CDN):**
+```bash
+rpq | jq 'select(
+  .headers.status_code == 200 and
+  (.dns.cname_chain | length == 0) and
+  .dns.resolved_ips[0].asn_org != null
+) | {fqdn, ip: .dns.resolved_ips[0].ip, asn_org: .dns.resolved_ips[0].asn_org}'
+```
+
+**Hosts where RDAP nameservers differ from live DNS NS:**
+```bash
+rpq | jq 'select(.rdap != null and .dns.ns != null and (.dns.ns | length > 0)) | 
+  .dns.ns as $live | .rdap.nameservers as $rdap |
+  select(($live | sort) != ($rdap | sort)) |
+  {fqdn, live_ns: $live, rdap_ns: $rdap}'
+```
+
+**Stale CNAMEs pointing to specific providers:**
+```bash
+rpq | jq 'select(
+  ([.analysis.flags[]?] | any(. == "stale_cname"))
+) | {fqdn, chain: .dns.cname_chain, ips: [.dns.resolved_ips[]?.ip]}'
+```
+
+**Hosts with both version disclosure and server errors:**
+```bash
+rpq | jq 'select(
+  ([.analysis.flags[]?] | any(test("version_disclosed"))) and
+  ([.analysis.flags[]?] | any(test("http_server_error")))
+) | {fqdn, server: .headers.present.server, status: .headers.status_code}'
+```
+
+**Unique SAN domains not in the store (potential attack surface):**
+```bash
+rpq | jq -r '.tls.sans[]?' | sort -u | while read san; do
+  san_clean=$(echo "$san" | sed 's/^\*\.//')
+  rpq | jq -r '.fqdn' | grep -qx "$san_clean" || echo "$san_clean"
+done
+```
+
+**Hosts discovered only by one source (not cross-validated):**
+```bash
+rpq | jq 'select(.discovery_sources | length == 1) | {fqdn, source: .discovery_sources[0]}'
+```
+
 ### Extracting specific fields
 
 ```bash
@@ -640,4 +819,94 @@ rpq | jq -r '[.fqdn, (.dns.resolved_ips[]? | "\(.ip) \(.asn_org // "unknown")")]
 
 # Compact summary: fqdn, scope, flags
 rpq | jq '{fqdn, scope: .scope.status, flags: .analysis.flags}'
+```
+
+### Diff workflows
+
+```bash
+# Compare two scans
+rp diff --old scan1.jsonl --new scan2.jsonl
+
+# JSON output for programmatic use
+rp diff --old scan1.jsonl --new scan2.jsonl --format json
+
+# CSV for spreadsheets
+rp diff --old scan1.jsonl --new scan2.jsonl --format csv
+
+# Include all scope buckets
+rp diff --old scan1.jsonl --new scan2.jsonl --scope all
+```
+
+### Redirect-deny workflow
+
+After `rp headers`, identify mass-redirect patterns and filter them out:
+
+```bash
+# 1. Find the most common redirect destinations
+rpq | jq -r '.headers.redirect_chain[-1]? // empty' | sort | uniq -c | sort -rn | head -20
+
+# 2. Create a redirect-deny file with the noisy destinations
+cat > redirect-deny.txt <<EOF
+login.microsoftonline.com
+parked.example.com
+re:.*\.parked-domain\.com
+EOF
+
+# 3. Re-run scope with redirect-deny
+rp scope -i /tmp/store.jsonl --allow allow.txt --deny deny.txt --redirect-deny redirect-deny.txt
+
+# 4. Verify what got filtered
+rp report --view combined --scope out -i /tmp/store.jsonl | jq 'select(.scope.matched_rule | test("redirect-deny")) | {fqdn, rule: .scope.matched_rule}'
+```
+
+### Feeding other tools
+
+```bash
+# Feed live IPs to nmap
+rp report -i /tmp/store.jsonl --view ips -o live-ips.txt
+nmap -iL live-ips.txt -sV -oA scan
+
+# Feed in-scope subdomains to other tools
+rp report -i /tmp/store.jsonl --view subs --scope in -o inscope-subs.txt
+
+# Extract URLs for web scanning (httpx/nuclei/etc.)
+rpq | jq -r 'select(.headers.url_checked != "") | .headers.url_checked' > live-urls.txt
+
+# Extract hosts with specific technologies for targeted scanning
+rpq | jq -r 'select([.headers.technologies[]?] | any(. == "WordPress")) | .headers.url_checked' > wordpress-targets.txt
+rpq | jq -r 'select([.headers.technologies[]?] | any(. == "Jenkins")) | .headers.url_checked' > jenkins-targets.txt
+
+# Export flagged hosts as CSV for reporting
+rp report -i /tmp/store.jsonl --view combined --flagged-only --format csv -o flagged.csv
+
+# Extract all unique IPs with their PTR and ASN for network mapping
+rpq | jq -r '.dns.resolved_ips[]? | select(.ip != null) | [.ip, .ptr // "", .asn // "", .asn_org // "", .country // ""] | @csv' | sort -u > ip-intel.csv
+```
+
+### Quick triage
+
+```bash
+# One-liner: severity breakdown
+rpq | jq -r '.analysis.severity // "clean"' | sort | uniq -c | sort -rn
+
+# One-liner: flag breakdown
+rpq | jq -r '.analysis.flags[]?' | sort | uniq -c | sort -rn
+
+# One-liner: how many hosts have data from each module
+rpq | jq -r '[
+  (if .dns != null then "dns" else empty end),
+  (if .headers != null then "headers" else empty end),
+  (if .tls != null then "tls" else empty end),
+  (if .rdap != null then "rdap" else empty end),
+  (if .analysis != null then "analyze" else empty end)
+] | .[]' | sort | uniq -c | sort -rn
+
+# One-liner: technology breakdown
+rpq | jq -r '.headers.technologies[]?' | sort | uniq -c | sort -rn
+
+# Top 10 page titles (quick overview of what's running)
+rpq | jq -r '.headers.page_title? // empty' | sort | uniq -c | sort -rn | head -10
+
+# Hosts with no data at all (enum only, nothing else ran)
+rpq | jq 'select(.dns == null and .headers == null and .tls == null) | .fqdn'
 ```
