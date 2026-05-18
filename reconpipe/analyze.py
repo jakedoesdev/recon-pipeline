@@ -7,8 +7,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-import dns.resolver
+import dns.asyncresolver
 import dns.exception
+import dns.resolver
 import httpx
 
 from .config import get_key
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 TAKEOVER_FETCH_TIMEOUT = 10
 TAKEOVER_CONCURRENCY = 20
+DNS_CHECK_CONCURRENCY = 50
+IPINFO_CONCURRENCY = 10
 
 
 def _load_fingerprints(path: str | None) -> list[TakeoverFingerprint]:
@@ -27,8 +30,9 @@ def _load_fingerprints(path: str | None) -> list[TakeoverFingerprint]:
     return BUILTIN_FINGERPRINTS
 
 
-def _is_domain_unregistered(fqdn: str) -> bool:
-    """Check if a domain appears unregistered by querying SOA then NS."""
+async def _is_domain_unregistered_async(
+    resolver: dns.asyncresolver.Resolver, fqdn: str,
+) -> bool:
     import tldextract
     ext = tldextract.extract(fqdn)
     if not ext.domain or not ext.suffix:
@@ -36,7 +40,7 @@ def _is_domain_unregistered(fqdn: str) -> bool:
     registrable = f"{ext.domain}.{ext.suffix}"
     for rdtype in ("SOA", "NS"):
         try:
-            dns.resolver.resolve(registrable, rdtype)
+            await resolver.resolve(registrable, rdtype)
             return False
         except dns.resolver.NXDOMAIN:
             return True
@@ -46,16 +50,41 @@ def _is_domain_unregistered(fqdn: str) -> bool:
     return False
 
 
-def _check_stale_cname(host: Host) -> bool:
-    """CNAME chain exists but final target doesn't resolve or is unregistered."""
+def _is_stale_cname_candidate(host: Host) -> str | None:
+    """Returns the final CNAME target if it needs an unregistered check, or None."""
     if not host.dns or not host.dns.cname_chain:
-        return False
+        return None
     if not host.dns.resolved_ips and not host.dns.nxdomain:
-        return True
-    final_target = host.dns.cname_chain[-1]
-    if _is_domain_unregistered(final_target):
-        return True
-    return False
+        return ""
+    return host.dns.cname_chain[-1]
+
+
+async def _batch_stale_cname_checks(
+    hosts: dict[str, Host],
+) -> set[str]:
+    """Returns set of FQDNs that have stale CNAMEs."""
+    stale: set[str] = set()
+    resolver = dns.asyncresolver.Resolver()
+    sem = asyncio.Semaphore(DNS_CHECK_CONCURRENCY)
+
+    targets_needing_dns: list[tuple[str, str]] = []
+    for fqdn, host in hosts.items():
+        result = _is_stale_cname_candidate(host)
+        if result == "":
+            stale.add(fqdn)
+        elif result is not None:
+            targets_needing_dns.append((fqdn, result))
+
+    async def check(fqdn: str, final_target: str) -> None:
+        async with sem:
+            if await _is_domain_unregistered_async(resolver, final_target):
+                stale.add(fqdn)
+
+    tasks = [asyncio.create_task(check(fqdn, target)) for fqdn, target in targets_needing_dns]
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    return stale
 
 
 def _check_body_patterns(body: str, fp: TakeoverFingerprint) -> bool:
@@ -179,42 +208,58 @@ def _check_spf_permissive(host: Host) -> bool:
     return False
 
 
-def _check_ns_takeover(host: Host) -> list[str]:
-    if not host.dns or not host.dns.ns:
-        return []
-    flags = []
-    for ns in host.dns.ns:
-        ns_lower = ns.lower().rstrip(".")
-        for pattern in _NS_TAKEOVER_PATTERNS:
-            if ns_lower.endswith(pattern):
-                try:
-                    dns.resolver.resolve(ns_lower, "A")
-                except dns.resolver.NXDOMAIN:
-                    flags.append(f"ns_takeover_risk:{ns_lower}")
-                except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
-                        dns.exception.Timeout, Exception):
-                    pass
-                break
-    return flags
+async def _batch_dns_nxdomain_checks(
+    hostnames: set[str],
+) -> set[str]:
+    """Resolve a set of hostnames concurrently. Returns those that are NXDOMAIN."""
+    nxdomain: set[str] = set()
+    resolver = dns.asyncresolver.Resolver()
+    sem = asyncio.Semaphore(DNS_CHECK_CONCURRENCY)
+
+    async def check(hostname: str) -> None:
+        async with sem:
+            try:
+                await resolver.resolve(hostname, "A")
+            except dns.resolver.NXDOMAIN:
+                nxdomain.add(hostname)
+            except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
+                    dns.exception.Timeout, Exception):
+                pass
+
+    tasks = [asyncio.create_task(check(h)) for h in hostnames]
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    return nxdomain
 
 
-def _check_mx_dangling(host: Host) -> list[str]:
-    if not host.dns or not host.dns.mx:
-        return []
-    flags = []
-    for mx_entry in host.dns.mx:
-        parts = mx_entry.split()
-        mx_host = parts[-1].rstrip(".").lower() if parts else ""
-        if not mx_host:
+def _collect_ns_candidates(hosts: dict[str, Host]) -> dict[str, list[str]]:
+    """Returns {ns_hostname: [fqdns_using_it]} for NS hostnames matching takeover patterns."""
+    ns_to_fqdns: dict[str, list[str]] = defaultdict(list)
+    for host in hosts.values():
+        if not host.dns or not host.dns.ns:
             continue
-        try:
-            dns.resolver.resolve(mx_host, "A")
-        except dns.resolver.NXDOMAIN:
-            flags.append(f"mx_dangling:{mx_host}")
-        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers,
-                dns.exception.Timeout, Exception):
-            pass
-    return flags
+        for ns in host.dns.ns:
+            ns_lower = ns.lower().rstrip(".")
+            for pattern in _NS_TAKEOVER_PATTERNS:
+                if ns_lower.endswith(pattern):
+                    ns_to_fqdns[ns_lower].append(host.fqdn)
+                    break
+    return ns_to_fqdns
+
+
+def _collect_mx_candidates(hosts: dict[str, Host]) -> dict[str, list[str]]:
+    """Returns {mx_hostname: [fqdns_using_it]} for all MX hostnames."""
+    mx_to_fqdns: dict[str, list[str]] = defaultdict(list)
+    for host in hosts.values():
+        if not host.dns or not host.dns.mx:
+            continue
+        for mx_entry in host.dns.mx:
+            parts = mx_entry.split()
+            mx_host = parts[-1].rstrip(".").lower() if parts else ""
+            if mx_host:
+                mx_to_fqdns[mx_host].append(host.fqdn)
+    return mx_to_fqdns
 
 
 _STATUS_CATEGORIES: dict[str, list[int]] = {
@@ -334,34 +379,53 @@ def _find_majority_asn(hosts: dict[str, Host]) -> dict[str, int]:
     return majority
 
 
-def _enrich_online(host: Host) -> None:
-    """Fall back to ipinfo.io for ASN/country when MaxMind DBs weren't available."""
+async def _enrich_online_async(hosts: dict[str, Host]) -> None:
+    """Batch ipinfo.io lookups for IPs missing ASN/country."""
     key = get_key("ipinfo")
     if not key:
         return
 
-    for rip in host.dns.resolved_ips if host.dns else []:
-        if rip.is_private or (rip.asn and rip.country):
+    ip_to_rips: dict[str, list[ResolvedIp]] = defaultdict(list)
+    for host in hosts.values():
+        if not host.dns:
             continue
-        try:
-            with httpx.Client(timeout=5) as client:
-                headers = {"Authorization": f"Bearer {key}"}
-                resp = client.get(f"https://ipinfo.io/{rip.ip}/json", headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if not rip.country:
-                        rip.country = data.get("country")
-                    if not rip.asn:
-                        org = data.get("org", "")
-                        if org.startswith("AS"):
-                            parts = org.split(" ", 1)
-                            try:
-                                rip.asn = int(parts[0][2:])
-                                rip.asn_org = parts[1] if len(parts) > 1 else None
-                            except ValueError:
-                                pass
-        except Exception as e:
-            logger.debug("ipinfo.io lookup failed for %s: %s", rip.ip, e)
+        for rip in host.dns.resolved_ips:
+            if not rip.is_private and not (rip.asn and rip.country):
+                ip_to_rips[rip.ip].append(rip)
+
+    if not ip_to_rips:
+        return
+
+    logger.info("Enriching %d unique IPs via ipinfo.io (concurrency=%d)", len(ip_to_rips), IPINFO_CONCURRENCY)
+    sem = asyncio.Semaphore(IPINFO_CONCURRENCY)
+
+    async with httpx.AsyncClient(timeout=5) as client:
+        async def fetch(ip: str, rips: list[ResolvedIp]) -> None:
+            async with sem:
+                try:
+                    resp = await client.get(
+                        f"https://ipinfo.io/{ip}/json",
+                        headers={"Authorization": f"Bearer {key}"},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        for rip in rips:
+                            if not rip.country:
+                                rip.country = data.get("country")
+                            if not rip.asn:
+                                org = data.get("org", "")
+                                if org.startswith("AS"):
+                                    parts = org.split(" ", 1)
+                                    try:
+                                        rip.asn = int(parts[0][2:])
+                                        rip.asn_org = parts[1] if len(parts) > 1 else None
+                                    except ValueError:
+                                        pass
+                except Exception as e:
+                    logger.debug("ipinfo.io lookup failed for %s: %s", ip, e)
+
+        tasks = [asyncio.create_task(fetch(ip, rips)) for ip, rips in ip_to_rips.items()]
+        await asyncio.gather(*tasks)
 
 
 _SEVERITY_ORDER = ["critical", "high", "medium", "low"]
@@ -540,6 +604,66 @@ def _check_sans_new_subdomains(host: Host, all_fqdns: set[str]) -> bool:
     return False
 
 
+async def _run_network_prepasses(
+    in_scope_hosts: dict[str, Host],
+    fingerprints: list[TakeoverFingerprint],
+    enrich_online: bool,
+) -> tuple[dict[str, str], set[str], set[str], set[str]]:
+    """Run all network-dependent checks concurrently.
+
+    Returns (takeover_results, stale_fqdns, nxdomain_ns, nxdomain_mx).
+    """
+    # Collect takeover candidates
+    takeover_results: dict[str, str] = {}
+    takeover_candidates: list[tuple[Host, list[TakeoverFingerprint]]] = []
+    for host in in_scope_hosts.values():
+        nxdomain_service, needs_fetch = _match_takeover_cname(host, fingerprints)
+        if nxdomain_service:
+            takeover_results[host.fqdn] = nxdomain_service
+        elif needs_fetch:
+            takeover_candidates.append((host, needs_fetch))
+
+    # Collect NS and MX hostnames that need resolution
+    ns_candidates = _collect_ns_candidates(in_scope_hosts)
+    mx_candidates = _collect_mx_candidates(in_scope_hosts)
+    all_dns_hostnames = set(ns_candidates.keys()) | set(mx_candidates.keys())
+
+    # Log what we're about to do
+    counts = []
+    if takeover_candidates:
+        counts.append(f"{len(takeover_candidates)} takeover HTTP")
+    counts.append(f"stale CNAME DNS")
+    if all_dns_hostnames:
+        counts.append(f"{len(all_dns_hostnames)} NS/MX DNS")
+    if enrich_online:
+        counts.append("ipinfo enrichment")
+    logger.info("Running network checks: %s", ", ".join(counts))
+
+    # Run ipinfo enrichment first (so geo checks have data)
+    if enrich_online:
+        await _enrich_online_async(in_scope_hosts)
+
+    # Run stale CNAME, NS/MX DNS, and takeover HTTP concurrently
+    stale_task = asyncio.create_task(_batch_stale_cname_checks(in_scope_hosts))
+    dns_task = asyncio.create_task(_batch_dns_nxdomain_checks(all_dns_hostnames))
+
+    takeover_task = None
+    if takeover_candidates:
+        takeover_task = asyncio.create_task(_check_takeovers_async(takeover_candidates))
+
+    stale_fqdns = await stale_task
+    nxdomain_hostnames = await dns_task
+
+    if takeover_task:
+        confirmed = await takeover_task
+        takeover_results.update(confirmed)
+
+    nxdomain_ns = nxdomain_hostnames & set(ns_candidates.keys())
+    nxdomain_mx = nxdomain_hostnames & set(mx_candidates.keys())
+
+    return takeover_results, stale_fqdns, nxdomain_ns, nxdomain_mx
+
+
 def run_analyze(
     store_path: Path,
     expected_country: str | None = None,
@@ -559,20 +683,12 @@ def run_analyze(
     majority_asn = _find_majority_asn(in_scope_hosts)
     all_fqdns = set(hosts.keys())
 
-    takeover_results: dict[str, str] = {}
-    candidates: list[tuple[Host, list[TakeoverFingerprint]]] = []
-    for host in in_scope_hosts.values():
-        nxdomain_service, needs_fetch = _match_takeover_cname(host, fingerprints)
-        if nxdomain_service:
-            takeover_results[host.fqdn] = nxdomain_service
-        elif needs_fetch:
-            candidates.append((host, needs_fetch))
+    # --- Network pre-passes (all concurrent) ---
+    takeover_results, stale_fqdns, nxdomain_ns, nxdomain_mx = asyncio.run(
+        _run_network_prepasses(in_scope_hosts, fingerprints, enrich_online)
+    )
 
-    if candidates:
-        logger.info("Checking %d takeover candidates via HTTP (concurrency=%d)", len(candidates), TAKEOVER_CONCURRENCY)
-        confirmed = asyncio.run(_check_takeovers_async(candidates))
-        takeover_results.update(confirmed)
-
+    # --- Main analysis loop (pure in-memory) ---
     takeover_count = 0
     stale_count = 0
     geo_count = 0
@@ -592,25 +708,21 @@ def run_analyze(
         if not host.analysis:
             host.analysis = AnalysisInfo()
 
-        # Preserve existing flags (e.g. wildcard_dns from resolve)
         existing_flags = set(host.analysis.flags)
 
-        # Online enrichment first (so geo check has data)
-        if enrich_online and host.dns:
-            _enrich_online(host)
-
-        # Takeover and stale CNAME first (before geo, per design doc)
-        if _check_stale_cname(host):
+        # Stale CNAME
+        if host.fqdn in stale_fqdns:
             existing_flags.add("stale_cname")
             stale_count += 1
 
+        # Takeover
         takeover_service = takeover_results.get(host.fqdn)
         if takeover_service:
             existing_flags.add(f"takeover:{takeover_service}")
             host.analysis.takeover_candidate = True
             takeover_count += 1
 
-        # Geo mismatch (skip if host has takeover/stale — geo on third-party isn't meaningful)
+        # Geo mismatch (skip if host has takeover/stale)
         if not takeover_service and "stale_cname" not in existing_flags:
             geo_flags = _check_geo_mismatch(host, expected_country)
             for gf in geo_flags:
@@ -626,7 +738,7 @@ def run_analyze(
         if host.apex in multi_apex:
             existing_flags.add("multiple_apex_owners")
 
-        # Outlier ASN — host's non-CDN ASN differs from the apex majority
+        # Outlier ASN
         if host.dns and host.apex in majority_asn:
             maj = majority_asn[host.apex]
             for rip in host.dns.resolved_ips:
@@ -639,16 +751,23 @@ def run_analyze(
             existing_flags.add("spf_permissive")
             spf_count += 1
 
-        # NS delegation takeover risk
-        for nf in _check_ns_takeover(host):
-            existing_flags.add(nf)
-            host.analysis.takeover_candidate = True
-            ns_takeover_count += 1
+        # NS delegation takeover risk (from pre-pass results)
+        if host.dns and host.dns.ns:
+            for ns in host.dns.ns:
+                ns_lower = ns.lower().rstrip(".")
+                if ns_lower in nxdomain_ns:
+                    existing_flags.add(f"ns_takeover_risk:{ns_lower}")
+                    host.analysis.takeover_candidate = True
+                    ns_takeover_count += 1
 
-        # Dangling MX
-        for mf in _check_mx_dangling(host):
-            existing_flags.add(mf)
-            mx_dangling_count += 1
+        # Dangling MX (from pre-pass results)
+        if host.dns and host.dns.mx:
+            for mx_entry in host.dns.mx:
+                parts = mx_entry.split()
+                mx_host = parts[-1].rstrip(".").lower() if parts else ""
+                if mx_host and mx_host in nxdomain_mx:
+                    existing_flags.add(f"mx_dangling:{mx_host}")
+                    mx_dangling_count += 1
 
         # RDAP-derived flags
         for rf in _check_rdap(host):
