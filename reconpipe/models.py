@@ -86,6 +86,27 @@ class RdapInfo:
 
 
 @dataclass
+class WpscanPlugin:
+    slug: str
+    version: str | None = None
+    outdated: bool = False
+    vulnerabilities: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class WpscanInfo:
+    wp_version: str | None = None
+    wp_version_status: str | None = None
+    theme: str | None = None
+    theme_version: str | None = None
+    theme_outdated: bool = False
+    plugins: list[WpscanPlugin] = field(default_factory=list)
+    vulnerabilities: list[dict] = field(default_factory=list)
+    interesting_findings: list[dict] = field(default_factory=list)
+    scanned_at: str = ""
+
+
+@dataclass
 class AnalysisInfo:
     flags: list[str] = field(default_factory=list)
     severity: str | None = None
@@ -106,6 +127,7 @@ class Host:
     analysis: AnalysisInfo | None = None
     rdap: RdapInfo | None = None
     tls: TlsInfo | None = None
+    wpscan: WpscanInfo | None = None
 
 
 def _now_iso() -> str:

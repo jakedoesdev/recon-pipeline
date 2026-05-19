@@ -363,14 +363,15 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
 @click.option("--auto-scope", is_flag=True, default=False, help="Auto-generate allow.txt from targets without prompting")
 @click.option("--expected-country", default=None)
 @click.option("--rdap/--no-rdap", default=True)
+@click.option("--wpscan/--no-wpscan", "run_wpscan_flag", default=True)
 @click.option("--enrich-online/--no-enrich-online", default=False)
 @click.option("--refresh", is_flag=True, default=False, help="Re-check hosts that already have data from prior runs")
 def pipeline(
     input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
     resolvers, concurrency, scheme, allow, deny, auto_scope,
-    rdap, expected_country, enrich_online, refresh,
+    rdap, run_wpscan_flag, expected_country, enrich_online, refresh,
 ):
-    """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → analyze."""
+    """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → wpscan → analyze."""
     from .analyze import run_analyze
     from .headers import run_headers
     from .rdap import run_rdap
@@ -378,6 +379,7 @@ def pipeline(
     from .reverse import run_reverse
     from .scope import run_scope
     from .tls import run_tls
+    from .wpscan import run_wpscan
 
     # Validate targets and scope files before any work
     domains = _read_domains(input_path)
@@ -457,7 +459,14 @@ def pipeline(
     else:
         click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
 
-    # 8. Analyze
+    # 8. WPScan
+    if run_wpscan_flag:
+        click.echo("━━━ Phase: wpscan ━━━", err=True)
+        run_wpscan(store_path=store, refresh=refresh)
+    else:
+        click.echo("━━━ Phase: wpscan (skipped) ━━━", err=True)
+
+    # 9. Analyze
     click.echo("━━━ Phase: analyze ━━━", err=True)
     san_new = run_analyze(
         store_path=store,
@@ -476,6 +485,19 @@ def pipeline(
         click.echo(f"⚠ {len(san_new)} SAN-discovered FQDN(s) not in store — saved to {sans_rescan_path}", err=True)
 
     click.echo(f"━━━ Pipeline complete: {store} ━━━", err=True)
+    close_provenance()
+
+
+@cli.command()
+@click.option("-i", "--input", "input_path", required=True)
+@click.option("--refresh", is_flag=True, default=False, help="Re-scan all WordPress hosts, even those with existing WPScan data")
+@click.option("--api-token", default=None, help="WPScan API token (overrides keys.toml)")
+def wpscan(input_path, refresh, api_token):
+    """Run WPScan against detected WordPress hosts."""
+    from .wpscan import run_wpscan
+
+    init_provenance(Path(input_path))
+    run_wpscan(store_path=Path(input_path), refresh=refresh, api_token=api_token)
     close_provenance()
 
 

@@ -470,6 +470,10 @@ _FLAG_SEVERITY: dict[str, str] = {
     "wildcard_dns": "low",
     "sans_new_subdomains": "low",
     "lower_env_exposed": "medium",
+    "wp_vulns": "high",
+    "wp_outdated": "medium",
+    "wp_theme_outdated": "low",
+    "wp_plugins_outdated": "medium",
 }
 
 _DOMAIN_STATUS_SEVERITY: dict[str, str] = {
@@ -595,6 +599,22 @@ _LOWER_ENV_TITLE_PATTERNS = re.compile(
     r"pre-prod|internal|demo|beta|alpha)\b",
     re.I,
 )
+
+
+def _check_wpscan(host: Host) -> list[str]:
+    if not host.wpscan:
+        return []
+    flags = []
+    if host.wpscan.vulnerabilities:
+        flags.append(f"wp_vulns:{len(host.wpscan.vulnerabilities)}")
+    if host.wpscan.wp_version_status == "insecure":
+        flags.append("wp_outdated")
+    if host.wpscan.theme_outdated:
+        flags.append("wp_theme_outdated")
+    outdated_plugins = [p.slug for p in host.wpscan.plugins if p.outdated]
+    if outdated_plugins:
+        flags.append(f"wp_plugins_outdated:{len(outdated_plugins)}")
+    return flags
 
 
 def _check_leaked_ips(host: Host) -> bool:
@@ -723,6 +743,7 @@ def run_analyze(
     cors_count = 0
     cookie_count = 0
     lower_env_count = 0
+    wpscan_count = 0
 
     for host in in_scope_hosts.values():
         if not host.analysis:
@@ -835,6 +856,11 @@ def run_analyze(
             existing_flags.add("lower_env_exposed")
             lower_env_count += 1
 
+        # WPScan findings
+        for wf in _check_wpscan(host):
+            existing_flags.add(wf)
+            wpscan_count += 1
+
         host.analysis.flags = sorted(existing_flags)
         host.analysis.severity = _max_severity(host.analysis.flags)
 
@@ -849,11 +875,11 @@ def run_analyze(
     logger.info(
         "Analysis complete: %d takeover, %d stale CNAMEs, %d geo, %d private IPs, "
         "%d leaked IPs, %d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, "
-        "%d CORS, %d cookie, %d status, %d version, %d lower env, %d total flagged",
+        "%d CORS, %d cookie, %d status, %d version, %d lower env, %d WPScan, %d total flagged",
         takeover_count, stale_count, geo_count, private_count,
         leaked_count, spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
         tls_count, cors_count, cookie_count,
-        status_count, version_count, lower_env_count, flagged_total,
+        status_count, version_count, lower_env_count, wpscan_count, flagged_total,
     )
 
     if all_san_new_fqdns:

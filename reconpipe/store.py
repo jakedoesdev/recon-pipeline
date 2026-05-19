@@ -14,6 +14,8 @@ from .models import (
     ResolvedIp,
     ScopeInfo,
     TlsInfo,
+    WpscanInfo,
+    WpscanPlugin,
     _now_iso,
 )
 
@@ -58,6 +60,12 @@ def _rebuild_host(raw: dict) -> Host:
     if raw.get("tls"):
         tls = TlsInfo(**raw["tls"])
 
+    wpscan = None
+    if raw.get("wpscan"):
+        w = dict(raw["wpscan"])
+        w["plugins"] = [WpscanPlugin(**p) for p in (w.get("plugins") or [])]
+        wpscan = WpscanInfo(**w)
+
     return Host(
         fqdn=raw["fqdn"],
         apex=raw["apex"],
@@ -70,6 +78,7 @@ def _rebuild_host(raw: dict) -> Host:
         analysis=analysis,
         rdap=rdap,
         tls=tls,
+        wpscan=wpscan,
     )
 
 
@@ -123,6 +132,8 @@ def merge_host(existing: Host, incoming: Host) -> Host:
         existing.rdap = incoming.rdap
     if incoming.tls is not None:
         existing.tls = incoming.tls
+    if incoming.wpscan is not None:
+        existing.wpscan = incoming.wpscan
 
     return existing
 

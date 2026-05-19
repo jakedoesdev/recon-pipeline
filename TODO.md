@@ -12,7 +12,7 @@
 
 6. **SAN-discovered host rescan** — When `analyze` flags `sans_new_subdomains`, save those FQDNs to a `sans-rescan.txt` file for potential re-scanning and addition to the store. Should integrate with `rp add` and the crt.sh retry flow so newly discovered domains/subdomains are added to the store and processed through all modules.
 
-7. **Private IP extraction from headers/errors** — During `headers` (or `resolve`), check Location headers, error pages, response bodies, and other likely sources for leaked private IP addresses. Record each discovered private IP along with where it was found (which header, response body pattern, etc.) in the store. Flag the host appropriately. Goal: all private IPs exposed publicly by a domain/subdomain are captured, not just IPs from DNS resolution.
+7. ~~**Private IP extraction from headers/errors**~~ — Done. `headers` extracts private IPs from response headers (Location, Via, X-Forwarded-For, X-Real-IP, X-Backend-Server, and all X-* headers), redirect chain Location headers, and response body. Stored as `headers.leaked_ips[]` with ip, source, and detail context. `analyze` flags as `private_ip_leaked` (high severity).
 
 8. **Infrastructure ownership bucketing** — Sort hosts into buckets: likely client/target-controlled, CDN/proxy front-ends, and out-of-scope SaaS services. Primary bucket should be things the client likely owns/controls directly. Could add more buckets as needed. Include bucket assignment in report output or integrate into an existing module (likely `analyze`). Goal: know what entity or group of related entities owns the infrastructure behind each host.
 
@@ -20,7 +20,7 @@
 
 10. **Proper IP sorting by octets** — When outputting IPs in any module or report view, sort by octets numerically (e.g., `4.13.x.x` < `4.56.x.x` < `12.32.x.x`), not lexicographically by first digit. Applies to `ips` view, `subs-ips` view, and any other IP-ordered output.
 
-11. **WPScan integration** — Add an `rp wpscan` module with API key integration. Identify WordPress hosts from `headers` technology detection (no path fuzzing or endpoint probing for identification). Store complete wpscan output alongside the store (as enum does with bbot output). Capture in the store: WordPress version, theme and version, all identified plugins and versions, identified vulnerabilities/CVEs and what they affect, misconfigurations, exposed endpoints, and any other useful wpscan output. If full integration is too heavy, alternatively provide targeted wpscan commands to run against each detected WordPress host.
+11. ~~**WPScan integration**~~ — Done. `rp wpscan` module runs WPScan against WordPress hosts detected by `headers` technology fingerprinting. Subprocess wrapper with JSON parsing, API key via `keys.toml` (optional — warns if missing). Stores `WpscanInfo` on the host: wp_version, theme, plugins (with versions), vulnerabilities/CVEs, interesting findings. Raw JSON saved to `wpscan_out/`. Integrated into pipeline between rdap and analyze. `analyze` flags: `wp_vulns`, `wp_outdated`, `wp_theme_outdated`, `wp_plugins_outdated`.
 
 12. **Parallel execution for later modules** — `headers`, `tls`, `rdap`, and `reverse` write to different fields and could run concurrently after `resolve`. Requires field-level merging on write (each module only touches its own slice of the record).
 

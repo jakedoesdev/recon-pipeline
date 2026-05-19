@@ -6,6 +6,7 @@ Composable recon pipeline for web and external assessments. Wraps BBOT and crt.s
 
 - Python 3.11+
 - [BBOT 2.8.4+](https://github.com/blacklanternsecurity/bbot) (for `--bbot` enumeration)
+- [WPScan](https://wpscan.com/) (for `rp wpscan` — pre-installed on Kali, or `apt install wpscan`)
 - Kali Linux (tested), any Linux should work
 
 ## Installation
@@ -40,6 +41,9 @@ Create `~/.config/reconpipe/keys.toml`:
 [api_keys]
 # ipinfo.io — used by `rp analyze --enrich-online` for ASN/country lookup
 ipinfo = "your_ipinfo_token"
+
+# WPScan — used by `rp wpscan` for vulnerability database lookups (optional, scans work without it)
+wpscan = "your_wpscan_token"
 
 # Any BBOT module secrets (passed to BBOT via temp secrets.yml)
 # Key names should match BBOT's expected secret names
@@ -126,7 +130,7 @@ rp pipeline -i domains.txt -o store.jsonl --allow scope-allow.txt --deny scope-d
 rp pipeline -i domains.txt -o store.jsonl --auto-scope   # auto-generate scope files
 ```
 
-Runs all phases in sequence: enum → scope → resolve → reverse → headers → tls → rdap → analyze. Use this once you're comfortable with the individual modules and know which options you want. For a first engagement, run each phase separately so you can review results between steps.
+Runs all phases in sequence: enum → scope → resolve → reverse → headers → tls → rdap → wpscan → analyze. Use this once you're comfortable with the individual modules and know which options you want. For a first engagement, run each phase separately so you can review results between steps.
 
 Scope files are validated before any work begins (see enum section above). At the end of the pipeline, any crt.sh failures or SAN-discovered hosts are saved to rescan files with suggested re-run commands.
 
@@ -251,7 +255,19 @@ rp rdap -i store.jsonl --refresh                        # re-check all apex doma
 
 Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skips apex domains that already have RDAP data from prior runs; use `--refresh` to re-check all. Skip entirely with `rp pipeline --no-rdap`.
 
-#### 8. Analyze
+#### 8. WPScan
+
+```bash
+rp wpscan -i store.jsonl
+rp wpscan -i store.jsonl --api-token YOUR_TOKEN          # override keys.toml
+rp wpscan -i store.jsonl --refresh                       # re-scan all WordPress hosts
+```
+
+Scans WordPress hosts detected by `rp headers` (via technology fingerprinting — no path fuzzing or endpoint probing for identification). Requires `wpscan` on PATH (pre-installed on Kali, or `apt install wpscan`). Runs without an API token but warns that vulnerability data will not be available; add a `wpscan` key to `keys.toml` for full CVE lookups.
+
+Captures: WordPress version and update status, active theme and version, all detected plugins and versions, known vulnerabilities/CVEs (with API token), and interesting findings (exposed endpoints, misconfigurations like XML-RPC, debug.log, directory listing). Raw WPScan JSON output is saved to `wpscan_out/` next to the store for manual review. Skips hosts that already have WPScan data from prior runs; use `--refresh` to re-scan all. Skip entirely with `rp pipeline --no-wpscan`.
+
+#### 9. Analyze
 
 ```bash
 rp analyze -i store.jsonl
@@ -274,8 +290,10 @@ Detects:
 - CORS misconfigurations (wildcard origin with credentials)
 - Cookie security (missing Secure, HttpOnly flags)
 - TLS SANs containing subdomains not in the store (potential undiscovered hosts)
+- Private IPs leaked in HTTP headers, redirects, or response bodies (information disclosure)
 - HTTP status code anomalies and version disclosure in headers
 - Exposed lower environments (dev, staging, QA, UAT, test, sandbox, preprod, internal) detected via FQDN patterns and page titles
+- WordPress vulnerabilities, outdated core/themes/plugins (from WPScan data)
 
 Each flag is assigned a severity rating (critical, high, medium, low). The host's overall severity reflects its highest-severity flag for easy filtering.
 
@@ -285,7 +303,7 @@ Each flag is assigned a severity rating (critical, high, medium, low). The host'
 ⚠ 12 SAN-discovered FQDN(s) not in store — saved to sans-rescan.txt
 ```
 
-#### 9. Report
+#### 10. Report
 
 ```bash
 rp report -i store.jsonl --view combined                 # full JSONL (default)
@@ -301,7 +319,7 @@ rp report -i store.jsonl --flagged-only                  # only hosts with analy
 rp report -i store.jsonl --view subs -o subs.txt         # write to file
 ```
 
-#### 10. Diff
+#### 11. Diff
 
 ```bash
 rp diff --old scan1.jsonl --new scan2.jsonl
@@ -321,7 +339,7 @@ Compares two snapshots and reports:
 | Module | File | Purpose |
 |--------|------|---------|
 | CLI | `reconpipe/cli.py` | Click command group, argument parsing, pipeline orchestration |
-| Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, TlsInfo, ScopeInfo, AnalysisInfo, RdapInfo, ResolvedIp |
+| Models | `reconpipe/models.py` | Dataclasses: Host, DnsInfo, HeaderInfo, TlsInfo, ScopeInfo, AnalysisInfo, RdapInfo, WpscanInfo, ResolvedIp, LeakedIp |
 | Store | `reconpipe/store.py` | JSONL read/write with merge-on-FQDN (unions discovery_sources, preserves phase data) |
 | Log | `reconpipe/log.py` | Centralized logging setup, provenance trail (`<store>.provenance.jsonl`) |
 | Config | `reconpipe/config.py` | Loads `config.toml` and `keys.toml`, resolves env var overrides |
@@ -329,11 +347,12 @@ Compares two snapshots and reports:
 | BBOT | `reconpipe/enum/bbot.py` | Subprocess wrapper for BBOT, parses JSON output, passes secrets |
 | Resolve | `reconpipe/resolve.py` | Async DNS (dnspython), CNAME walking, wildcard detection, MaxMind enrichment |
 | Reverse | `reconpipe/reverse.py` | PTR (reverse DNS) lookups on discovered public IPs |
-| Headers | `reconpipe/headers.py` | Security header checks, page title/technology detection, cookie analysis |
+| Headers | `reconpipe/headers.py` | Security header checks, page title/technology detection, cookie analysis, private IP leak extraction |
 | TLS | `reconpipe/tls.py` | Live TLS certificate collection (subject, issuer, SANs, expiry) |
 | RDAP | `reconpipe/rdap.py` | RDAP registration lookups per apex (registrar, expiry, status, DNSSEC) |
 | Scope | `reconpipe/scope.py` | Three-state classification with exact/wildcard/regex pattern matching |
-| Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, TLS/CORS/cookie checks, severity ratings |
+| WPScan | `reconpipe/wpscan.py` | WPScan subprocess wrapper, JSON parsing, WordPress vulnerability detection |
+| Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, TLS/CORS/cookie/WPScan checks, severity ratings |
 | Fingerprints | `reconpipe/fingerprints.py` | 17 subdomain takeover fingerprints (S3, Azure, GitHub Pages, etc.) |
 | Report | `reconpipe/report.py` | Output views: subs, ips, subs-ips, headers, combined (JSONL/JSON/CSV) |
 | Diff | `reconpipe/diff.py` | Structured snapshot comparison (added/removed/changed) |
@@ -394,6 +413,26 @@ All data lives in a single JSONL file (one JSON object per line, keyed by FQDN).
     "nameservers": ["ns1.cloudflare.com", "ns2.cloudflare.com"],
     "dnssec": true,
     "queried_at": "2026-05-17T12:00:00+00:00"
+  },
+  "wpscan": {
+    "wp_version": "6.4.3",
+    "wp_version_status": "latest",
+    "theme": "flavor",
+    "theme_version": "1.2.0",
+    "theme_outdated": false,
+    "plugins": [
+      {"slug": "contact-form-7", "version": "5.9.3", "outdated": false, "vulnerabilities": []},
+      {"slug": "elementor", "version": "3.18.0", "outdated": true, "vulnerabilities": [
+        {"title": "Elementor < 3.19.0 - Stored XSS", "type": "XSS", "cve": "CVE-2024-XXXX", "fixed_in": "3.19.0"}
+      ]}
+    ],
+    "vulnerabilities": [
+      {"title": "Elementor < 3.19.0 - Stored XSS", "type": "XSS", "affects": "plugin:elementor", "cve": "CVE-2024-XXXX", "fixed_in": "3.19.0"}
+    ],
+    "interesting_findings": [
+      {"url": "https://app.example.com/xmlrpc.php", "type": "xmlrpc", "description": "XML-RPC seems to be enabled", "references": {}}
+    ],
+    "scanned_at": "2026-05-17T14:00:10+00:00"
   }
 }
 ```

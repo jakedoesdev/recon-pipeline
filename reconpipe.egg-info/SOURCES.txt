@@ -20,6 +20,7 @@ reconpipe/reverse.py
 reconpipe/scope.py
 reconpipe/store.py
 reconpipe/tls.py
+reconpipe/wpscan.py
 reconpipe.egg-info/PKG-INFO
 reconpipe.egg-info/SOURCES.txt
 reconpipe.egg-info/dependency_links.txt

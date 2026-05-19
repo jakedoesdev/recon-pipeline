@@ -19,6 +19,7 @@ Each line in the `.jsonl` store is a **Host** record with the following top-leve
 | `analysis` | object or null | Anomaly detection results. Null if `rp analyze` hasn't been run yet. |
 | `tls` | object or null | Live TLS certificate data. Null if `rp tls` hasn't been run yet. |
 | `rdap` | object or null | RDAP registration data for the host's apex domain. Null if `rp rdap` hasn't been run yet. Shared across all hosts under the same apex. |
+| `wpscan` | object or null | WPScan results for WordPress hosts. Null if `rp wpscan` hasn't been run or the host isn't WordPress. |
 
 ### dns (DnsInfo)
 
@@ -68,10 +69,21 @@ Populated by `rp headers`. Contains the results of HTTP security header probing.
 | `meta_generator` | string or null | The `<meta name="generator">` content, which CMS and frameworks typically set (e.g. `"WordPress 6.4"`, `"Drupal 10"`, `"Hugo 0.121.0"`). Null if not present. |
 | `technologies` | list | Technologies detected in the response body via pattern matching. Detects: WordPress, Drupal, Joomla, Next.js, Nuxt.js, Angular, React, Shopify, Squarespace, Wix, Confluence, Jira, GitLab, Grafana, Jenkins, Kibana, phpMyAdmin, nginx, Apache Tomcat, IIS, Laravel, Gatsby, HubSpot. |
 | `cookies` | list | Cookies set by the response, with security attribute analysis. Each entry is `{"name": "session_id", "secure": true, "httponly": true, "samesite": "Strict"}`. Missing attributes are flagged by analyze. |
+| `leaked_ips` | list | Private IPv4 addresses discovered in the HTTP response — headers (Location, Via, X-Forwarded-For, X-Real-IP, X-Backend-Server, and all X-* headers), redirect chain Location headers, and response body. Each entry is a `LeakedIp` object (see below). Empty list if none found. |
 | `body_snippet` | string or null | First 5,000 characters of the response body. Used by analyze for takeover confirmation without re-fetching. Null if no body was returned. |
 | `source` | string | Always `"native"` (direct HTTP request). |
 | `grade` | string or null | Reserved for future use. |
 | `checked_at` | string | ISO 8601 timestamp of the header check. |
+
+### leaked_ips[] (LeakedIp)
+
+Each entry in `headers.leaked_ips`:
+
+| Field | Type | Description |
+|---|---|---|
+| `ip` | string | The private IPv4 address found (RFC 1918, loopback, or link-local). |
+| `source` | string | Where the IP was found: `"header:<header_name>"` (e.g. `"header:x-forwarded-for"`), `"redirect_location"` (Location header in a redirect hop), or `"body"` (response body). |
+| `detail` | string or null | Contextual snippet — the header value, redirect info, or surrounding body text (up to 200 chars). |
 
 ### tls (TlsInfo)
 
@@ -106,7 +118,7 @@ Populated by `rp analyze`. Contains automated anomaly detection results.
 | Field | Type | Description |
 |---|---|---|
 | `severity` | string or null | Highest severity across all flags for this host: `"critical"`, `"high"`, `"medium"`, or `"low"`. Null if no flags are set. Severity is computed automatically from the flag types (see severity table below). |
-| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"cert_expired"` (live TLS certificate has expired), `"cert_expiring_soon:<N>d"` (certificate expires within 30 days), `"cert_self_signed"` (certificate issuer matches subject — self-signed), `"cors_wildcard_credentials"` (CORS allows all origins with credentials — credential theft risk), `"cookies_missing_secure"` (at least one cookie missing the Secure flag — sent over HTTP), `"cookies_missing_httponly"` (at least one cookie missing HttpOnly — accessible via JavaScript), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`), `"sans_new_subdomains"` (host's TLS certificate SANs contain FQDNs not present in the store — potential undiscovered subdomains worth investigating). |
+| `flags` | list | List of anomaly tags detected. Possible values: `"wildcard_dns"` (host resolves to known wildcard IPs for its apex), `"stale_cname"` (CNAME chain exists but resolves to nothing — takeover candidate), `"takeover:<service>"` (CNAME matches a known vulnerable service fingerprint, e.g. `"takeover:github"`), `"geo_mismatch:<CC>"` (IP in an unexpected country), `"private_ip_external"` (public DNS resolves to private/reserved IP), `"multiple_apex_owners"` (apex has IPs across 2+ distinct non-CDN ASNs — CDN providers like Cloudflare, Fastly, and Akamai are excluded from the count), `"unexpected_asn:<asn>"` (host's non-CDN ASN differs from the majority ASN for its apex — potential outlier worth investigating), `"spf_permissive"` (SPF record uses `+all` or `?all` — allows any server to spoof mail), `"ns_takeover_risk:<ns_host>"` (NS record points to a provider where the nameserver hostname is NXDOMAIN — full domain takeover risk), `"mx_dangling:<mx_host>"` (MX record points to a hostname that doesn't resolve — potential mail interception), `"domain_expired"` (RDAP shows the domain registration has expired), `"domain_expiring_soon:<N>d"` (domain expires within 60 days — potential lapse risk), `"domain_status:<status>"` (domain has a risky ICANN status like `pendingDelete`, `redemptionPeriod`, `serverHold`, `clientHold`, or `pendingTransfer`), `"no_dnssec"` (domain does not have DNSSEC delegation signing active), `"cert_expired"` (live TLS certificate has expired), `"cert_expiring_soon:<N>d"` (certificate expires within 30 days), `"cert_self_signed"` (certificate issuer matches subject — self-signed), `"cors_wildcard_credentials"` (CORS allows all origins with credentials — credential theft risk), `"cookies_missing_secure"` (at least one cookie missing the Secure flag — sent over HTTP), `"cookies_missing_httponly"` (at least one cookie missing HttpOnly — accessible via JavaScript), `"http_auth_required:<code>"` (returned 401 or 403 — auth-protected resource), `"http_server_error:<code>"` (returned 500/502/503 — misconfigured or failing), `"http_not_found:<code>"` (returned 404), `"http_redirect_permanent:<code>"` (returned 301/308), `"version_disclosed:<header>"` (a response header contains a version string, e.g. `"version_disclosed:server"`, `"version_disclosed:x-powered-by"`), `"sans_new_subdomains"` (host's TLS certificate SANs contain FQDNs not present in the store — potential undiscovered subdomains worth investigating), `"private_ip_leaked"` (private IP addresses found in HTTP response headers, redirects, or body — information disclosure revealing internal infrastructure), `"wp_vulns:<N>"` (N known WordPress vulnerabilities found by WPScan — requires API token), `"wp_outdated"` (WordPress core version is known-insecure), `"wp_theme_outdated"` (active theme version is outdated), `"wp_plugins_outdated:<N>"` (N plugins have outdated versions). |
 | `takeover_candidate` | bool | `true` if any `takeover:*` or `ns_takeover_risk:*` flag was set. Quick filter for high-priority findings. |
 | `notes` | string or null | Free-text field for additional context. |
 
@@ -117,9 +129,9 @@ Each flag is assigned a severity level. The host's `analysis.severity` field ref
 | Severity | Flags |
 |---|---|
 | **critical** | `takeover:*`, `ns_takeover_risk:*`, `domain_expired`, `cert_expired`, `domain_status:pendingDelete`, `domain_status:redemptionPeriod` |
-| **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `cert_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external` |
-| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `cert_self_signed`, `cors_wildcard_credentials`, `domain_status:pendingTransfer`, `lower_env_exposed` |
-| **low** | `no_dnssec`, `cookies_missing_secure`, `cookies_missing_httponly`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns`, `sans_new_subdomains` |
+| **high** | `stale_cname`, `mx_dangling:*`, `domain_expiring_soon:*`, `cert_expiring_soon:*`, `domain_status:serverHold`, `domain_status:clientHold`, `spf_permissive`, `private_ip_external`, `private_ip_leaked`, `wp_vulns:*` |
+| **medium** | `geo_mismatch:*`, `multiple_apex_owners`, `unexpected_asn:*`, `cert_self_signed`, `cors_wildcard_credentials`, `domain_status:pendingTransfer`, `lower_env_exposed`, `wp_outdated`, `wp_plugins_outdated:*` |
+| **low** | `no_dnssec`, `cookies_missing_secure`, `cookies_missing_httponly`, `version_disclosed:*`, `http_server_error:*`, `http_auth_required:*`, `http_not_found:*`, `http_redirect_permanent:*`, `wildcard_dns`, `sans_new_subdomains`, `wp_theme_outdated` |
 
 ### rdap (RdapInfo)
 
@@ -134,6 +146,33 @@ Populated by `rp rdap`. Contains RDAP registration data queried once per apex do
 | `nameservers` | list | Nameservers registered with the registry (as opposed to what DNS resolves). Differences between these and `dns.ns` can indicate stale delegation. |
 | `dnssec` | bool or null | Whether DNSSEC delegation signing is active. `false` means the domain is not DNSSEC-signed. `null` if the RDAP response didn't include this field. |
 | `queried_at` | string | ISO 8601 timestamp of when the RDAP lookup was performed. |
+
+### wpscan (WpscanInfo)
+
+Populated by `rp wpscan`. Contains WordPress-specific scan results for hosts where `headers.technologies` includes `"WordPress"`. Null for non-WordPress hosts or if `rp wpscan` hasn't been run.
+
+| Field | Type | Description |
+|---|---|---|
+| `wp_version` | string or null | Detected WordPress core version (e.g. `"6.4.3"`). Null if version detection failed. |
+| `wp_version_status` | string or null | Version status from WPScan: `"latest"`, `"outdated"`, or `"insecure"`. `"insecure"` means known vulnerabilities exist for this version. |
+| `theme` | string or null | Active theme slug or name (e.g. `"flavor"`, `"flavor"`). |
+| `theme_version` | string or null | Active theme version. |
+| `theme_outdated` | bool | `true` if WPScan reports the theme version as outdated. |
+| `plugins` | list | Detected plugins. Each entry is a `WpscanPlugin` object (see below). |
+| `vulnerabilities` | list | All vulnerabilities found across core, theme, and plugins. Each entry has `title`, `type` (e.g. `"XSS"`, `"SQLi"`), `affects` (e.g. `"version"`, `"main_theme"`, `"plugin:elementor"`), `cve` (e.g. `"CVE-2024-1234"` or null), and `fixed_in` (version that fixes it, or null). Requires WPScan API token for population. |
+| `interesting_findings` | list | Misconfigurations and exposed endpoints found by WPScan (e.g. XML-RPC enabled, debug.log accessible, directory listing). Each entry has `url`, `type`, `description`, and `references`. |
+| `scanned_at` | string | ISO 8601 timestamp of the scan. |
+
+### plugins[] (WpscanPlugin)
+
+Each entry in `wpscan.plugins`:
+
+| Field | Type | Description |
+|---|---|---|
+| `slug` | string | Plugin slug/identifier (e.g. `"contact-form-7"`, `"elementor"`). |
+| `version` | string or null | Detected plugin version. Null if version detection failed. |
+| `outdated` | bool | `true` if WPScan reports the plugin version as outdated. |
+| `vulnerabilities` | list | Vulnerabilities specific to this plugin. Same structure as `wpscan.vulnerabilities` entries. |
 
 ---
 
@@ -305,6 +344,69 @@ rpq | jq -r '.headers.technologies[]?' | sort | uniq -c | sort -rn
 **Hosts with a meta generator tag:**
 ```bash
 rpq | jq 'select(.headers != null and .headers.meta_generator != null) | {fqdn, generator: .headers.meta_generator}'
+```
+
+### Leaked private IP queries
+
+**Hosts leaking private IPs in HTTP responses:**
+```bash
+rpq | jq 'select([.analysis.flags[]?] | any(. == "private_ip_leaked"))'
+```
+
+**List all leaked IPs with source details:**
+```bash
+rpq | jq 'select(.headers.leaked_ips | length > 0) | {fqdn, leaked: .headers.leaked_ips}'
+```
+
+**Leaked IPs found in specific sources (headers vs body):**
+```bash
+# Only header leaks
+rpq | jq '[.headers.leaked_ips[]? | select(.source | startswith("header:"))] | select(length > 0) | .[0] | {ip, source, detail}'
+
+# Only body leaks
+rpq | jq 'select([.headers.leaked_ips[]?] | any(.source == "body")) | {fqdn, leaks: [.headers.leaked_ips[] | select(.source == "body")]}'
+```
+
+**All unique leaked private IPs across the store:**
+```bash
+rpq | jq -r '.headers.leaked_ips[]?.ip' | sort -u
+```
+
+### WPScan queries
+
+**All WordPress hosts with scan results:**
+```bash
+rpq | jq 'select(.wpscan != null) | {fqdn, version: .wpscan.wp_version, status: .wpscan.wp_version_status, theme: .wpscan.theme, plugins: (.wpscan.plugins | length), vulns: (.wpscan.vulnerabilities | length)}'
+```
+
+**WordPress hosts with known vulnerabilities:**
+```bash
+rpq | jq 'select(.wpscan != null and (.wpscan.vulnerabilities | length > 0)) | {fqdn, vulns: .wpscan.vulnerabilities}'
+```
+
+**WordPress hosts running insecure core versions:**
+```bash
+rpq | jq 'select(.wpscan.wp_version_status? == "insecure") | {fqdn, version: .wpscan.wp_version}'
+```
+
+**List all detected plugins across WordPress hosts:**
+```bash
+rpq | jq -r '.wpscan.plugins[]?.slug' | sort | uniq -c | sort -rn
+```
+
+**Outdated plugins with their versions:**
+```bash
+rpq | jq '.wpscan.plugins[]? | select(.outdated) | {slug, version}' | sort -u
+```
+
+**WordPress hosts with interesting findings (XML-RPC, debug.log, etc.):**
+```bash
+rpq | jq 'select(.wpscan != null and (.wpscan.interesting_findings | length > 0)) | {fqdn, findings: [.wpscan.interesting_findings[] | .type]}'
+```
+
+**All CVEs found across WordPress hosts:**
+```bash
+rpq | jq -r '[.wpscan.vulnerabilities[]?.cve // empty] | .[]' | sort -u
 ```
 
 ### Cookie and CORS queries
