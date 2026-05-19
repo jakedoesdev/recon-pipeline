@@ -22,6 +22,7 @@ TRACKED_FIELDS = [
     "rdap.statuses",
     "tls.not_after",
     "tls.issuer",
+    "headers.leaked_ips",
 ]
 
 
@@ -47,9 +48,17 @@ def _resolved_ips_repr(host: Host) -> list[str] | None:
     return sorted(_resolve_ip_key(rip) for rip in host.dns.resolved_ips)
 
 
+def _leaked_ips_repr(host: Host) -> list[str] | None:
+    if not host.headers or not host.headers.leaked_ips:
+        return None
+    return sorted(f"{lip.ip}({lip.source})" for lip in host.headers.leaked_ips)
+
+
 def _get_comparable(host: Host, field: str):
     if field == "dns.resolved_ips":
         return _resolved_ips_repr(host)
+    if field == "headers.leaked_ips":
+        return _leaked_ips_repr(host)
     return _extract_field(host, field)
 
 

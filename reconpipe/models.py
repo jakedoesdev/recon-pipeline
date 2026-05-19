@@ -5,6 +5,13 @@ from datetime import datetime, timezone
 
 
 @dataclass
+class LeakedIp:
+    ip: str
+    source: str
+    detail: str | None = None
+
+
+@dataclass
 class ResolvedIp:
     ip: str
     record_type: str
@@ -40,6 +47,7 @@ class HeaderInfo:
     meta_generator: str | None = None
     technologies: list[str] = field(default_factory=list)
     cookies: list[dict] = field(default_factory=list)
+    leaked_ips: list[LeakedIp] = field(default_factory=list)
     body_snippet: str | None = None
     source: str = "native"
     grade: str | None = None

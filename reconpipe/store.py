@@ -9,6 +9,7 @@ from .models import (
     DnsInfo,
     HeaderInfo,
     Host,
+    LeakedIp,
     RdapInfo,
     ResolvedIp,
     ScopeInfo,
@@ -37,7 +38,9 @@ def _rebuild_host(raw: dict) -> Host:
 
     headers = None
     if raw.get("headers"):
-        headers = HeaderInfo(**raw["headers"])
+        h = dict(raw["headers"])
+        h["leaked_ips"] = [LeakedIp(**lip) for lip in (h.get("leaked_ips") or [])]
+        headers = HeaderInfo(**h)
 
     scope = None
     if raw.get("scope"):

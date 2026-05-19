@@ -451,6 +451,7 @@ _FLAG_SEVERITY: dict[str, str] = {
     "domain_expiring_soon": "high",
     "spf_permissive": "high",
     "private_ip_external": "high",
+    "private_ip_leaked": "high",
     "geo_mismatch": "medium",
     "multiple_apex_owners": "medium",
     "unexpected_asn": "medium",
@@ -596,6 +597,10 @@ _LOWER_ENV_TITLE_PATTERNS = re.compile(
 )
 
 
+def _check_leaked_ips(host: Host) -> bool:
+    return bool(host.headers and host.headers.leaked_ips)
+
+
 def _check_lower_env(host: Host) -> bool:
     if _LOWER_ENV_FQDN_PATTERNS.search(host.fqdn):
         return True
@@ -707,6 +712,7 @@ def run_analyze(
     stale_count = 0
     geo_count = 0
     private_count = 0
+    leaked_count = 0
     status_count = 0
     version_count = 0
     spf_count = 0
@@ -747,6 +753,11 @@ def run_analyze(
         if _check_private_ip_external(host):
             existing_flags.add("private_ip_external")
             private_count += 1
+
+        # Private IP leaked in HTTP headers/body
+        if _check_leaked_ips(host):
+            existing_flags.add("private_ip_leaked")
+            leaked_count += 1
 
         # Multiple apex owners
         if host.apex in multi_apex:
@@ -837,10 +848,10 @@ def run_analyze(
     flagged_total = sum(1 for h in in_scope_hosts.values() if h.analysis and h.analysis.flags)
     logger.info(
         "Analysis complete: %d takeover, %d stale CNAMEs, %d geo, %d private IPs, "
-        "%d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, %d CORS, "
-        "%d cookie, %d status, %d version, %d lower env, %d total flagged",
+        "%d leaked IPs, %d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, "
+        "%d CORS, %d cookie, %d status, %d version, %d lower env, %d total flagged",
         takeover_count, stale_count, geo_count, private_count,
-        spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
+        leaked_count, spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
         tls_count, cors_count, cookie_count,
         status_count, version_count, lower_env_count, flagged_total,
     )

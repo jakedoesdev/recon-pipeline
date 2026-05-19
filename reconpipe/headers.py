@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 
 from .log import provenance
-from .models import HeaderInfo, Host, _now_iso
+from .models import HeaderInfo, Host, LeakedIp, _now_iso
 from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,79 @@ _BODY_TECH_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"__GATSBY", re.I), "Gatsby"),
     (re.compile(r"hubspot\.com/hub/", re.I), "HubSpot"),
 ]
+
+
+_IPV4_RE = re.compile(
+    r"(?<![0-9.])("
+    r"(?:10\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?))"
+    r"|(?:172\.(?:1[6-9]|2\d|3[01])\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?))"
+    r"|(?:192\.168\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?))"
+    r"|(?:127\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?))"
+    r"|(?:169\.254\.(?:25[0-5]|2[0-4]\d|1?\d\d?)\.(?:25[0-5]|2[0-4]\d|1?\d\d?))"
+    r")(?![0-9.])"
+)
+
+_LEAK_HEADERS = frozenset({
+    "location",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-server",
+    "x-real-ip",
+    "x-host",
+    "x-backend-server",
+    "x-backend",
+    "x-backend-host",
+    "x-served-by",
+    "x-origin-server",
+    "x-upstream",
+    "x-cache-server",
+    "x-debug",
+    "x-debug-info",
+    "x-cf-connecting-ip",
+    "x-cluster-client-ip",
+})
+
+
+def _extract_leaked_ips(resp: httpx.Response, body: str) -> list[LeakedIp]:
+    seen: set[tuple[str, str]] = set()
+    leaked: list[LeakedIp] = []
+
+    for key, val in resp.headers.multi_items():
+        k = key.lower()
+        if k in _LEAK_HEADERS or k.startswith("x-"):
+            for m in _IPV4_RE.finditer(val):
+                ip = m.group(1)
+                pair = (ip, f"header:{k}")
+                if pair not in seen:
+                    seen.add(pair)
+                    leaked.append(LeakedIp(ip=ip, source=f"header:{k}", detail=val[:200]))
+
+    for redir in resp.history:
+        loc = redir.headers.get("location", "")
+        if loc:
+            for m in _IPV4_RE.finditer(loc):
+                ip = m.group(1)
+                pair = (ip, "redirect_location")
+                if pair not in seen:
+                    seen.add(pair)
+                    leaked.append(LeakedIp(
+                        ip=ip, source="redirect_location",
+                        detail=f"{redir.status_code} {str(redir.url)} → {loc[:200]}",
+                    ))
+
+    if body:
+        for m in _IPV4_RE.finditer(body):
+            ip = m.group(1)
+            pair = (ip, "body")
+            if pair not in seen:
+                seen.add(pair)
+                start = max(0, m.start() - 40)
+                end = min(len(body), m.end() + 40)
+                context = body[start:end].replace("\n", " ").strip()
+                leaked.append(LeakedIp(ip=ip, source="body", detail=context[:200]))
+
+    return leaked
 
 
 def _load_expected(path: str | None) -> list[str]:
@@ -157,6 +230,7 @@ async def _native_check(
         body = resp.text[:15000]
         page_title, meta_generator, technologies = _parse_body(body)
         cookies = _parse_cookies(resp)
+        leaked_ips = _extract_leaked_ips(resp, body)
         body_snippet = body[:5000] if body else None
 
         info = HeaderInfo(
@@ -169,11 +243,18 @@ async def _native_check(
             meta_generator=meta_generator,
             technologies=technologies,
             cookies=cookies,
+            leaked_ips=leaked_ips,
             body_snippet=body_snippet,
             source="native",
             grade=None,
             checked_at=_now_iso(),
         )
+        if leaked_ips:
+            provenance(
+                module="headers", action="private_ip_leaked", fqdn=fqdn,
+                scheme=scheme, url=str(resp.url),
+                leaked=[{"ip": l.ip, "source": l.source, "detail": l.detail} for l in leaked_ips],
+            )
         provenance(
             module="headers", action="http_check", fqdn=fqdn,
             scheme=scheme, url=str(resp.url), status=resp.status_code,
