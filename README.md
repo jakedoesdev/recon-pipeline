@@ -123,9 +123,12 @@ Each phase can be run independently, reading from and writing to the same JSONL 
 
 ```bash
 rp pipeline -i domains.txt -o store.jsonl --allow scope-allow.txt --deny scope-deny.txt
+rp pipeline -i domains.txt -o store.jsonl --auto-scope   # auto-generate scope files
 ```
 
 Runs all phases in sequence: enum → scope → resolve → reverse → headers → tls → rdap → analyze. Use this once you're comfortable with the individual modules and know which options you want. For a first engagement, run each phase separately so you can review results between steps.
+
+Scope files are validated before any work begins (see enum section above). At the end of the pipeline, any crt.sh failures or SAN-discovered hosts are saved to rescan files with suggested re-run commands.
 
 #### 1. Subdomain enumeration
 
@@ -135,6 +138,8 @@ rp enum -i domains.txt -o store.jsonl --no-bbot          # crt.sh only
 rp enum -i domains.txt -o store.jsonl --no-crtsh         # BBOT only
 rp enum -i domains.txt -o store.jsonl --bbot-silent      # suppress BBOT terminal output
 rp enum -i domains.txt -o store.jsonl --bbot-preset reconpipe-quiet
+rp enum -i domains.txt -o store.jsonl --allow allow.txt --deny deny.txt  # use existing scope files
+rp enum -i domains.txt -o store.jsonl --auto-scope       # auto-generate allow.txt without prompting
 ```
 
 `domains.txt` is a newline-separated list of root domains:
@@ -144,7 +149,18 @@ example.com
 target.org
 ```
 
+**Scope enforcement:** If `--allow` is not provided, `enum` will offer to auto-generate an `allow.txt` with `*.rootdomain.tld` for each target domain and an empty `deny.txt` in the same directory as the targets file. Use `--auto-scope` to skip the interactive prompt. Scope is applied automatically after enumeration completes.
+
+**crt.sh resilience:** If crt.sh fails for any target domain (after 4 retry attempts), the failed domain is saved to `crtsh-rescan.txt` next to the store file. A reminder with a ready-to-use re-run command is printed at the end:
+
+```
+⚠ 1 domain(s) failed crt.sh — saved to crtsh-rescan.txt
+  Re-run with: rp enum -i crtsh-rescan.txt -o store.jsonl --no-bbot
+```
+
 #### 2. Scope tagging
+
+Scope is applied automatically after `rp enum` and `rp pipeline` (see above). You can also run it standalone to re-tag or apply redirect-deny rules:
 
 ```bash
 rp scope -i store.jsonl --allow allow.txt --deny deny.txt
@@ -262,6 +278,12 @@ Detects:
 - Exposed lower environments (dev, staging, QA, UAT, test, sandbox, preprod, internal) detected via FQDN patterns and page titles
 
 Each flag is assigned a severity rating (critical, high, medium, low). The host's overall severity reflects its highest-severity flag for easy filtering.
+
+**SAN-discovered hosts:** When TLS certificate SANs contain FQDNs not present in the store, they are saved to `sans-rescan.txt` next to the store file for potential re-scanning:
+
+```
+⚠ 12 SAN-discovered FQDN(s) not in store — saved to sans-rescan.txt
+```
 
 #### 9. Report
 
@@ -407,15 +429,21 @@ rp report -i example.jsonl --view subs
 ### Full assessment workflow
 
 ```bash
-# Create scope files
+# Option A: provide scope files
 echo "*.target.com" > allow.txt
 echo "*.dev.target.com" > deny.txt
-
-# Run everything
 rp pipeline -i domains.txt -o target.jsonl --allow allow.txt --deny deny.txt --expected-country US
+
+# Option B: auto-generate scope from targets (*.rootdomain.tld per target)
+rp pipeline -i domains.txt -o target.jsonl --auto-scope --expected-country US
 
 # Review flagged hosts
 rp report -i target.jsonl --flagged-only --format csv -o flagged.csv
+
+# Re-scan any failed crt.sh domains or SAN-discovered hosts
+# (rescan files are written automatically if needed)
+rp enum -i crtsh-rescan.txt -o target.jsonl --no-bbot     # if crt.sh failed
+# sans-rescan.txt contains FQDNs found in TLS SANs but not in the store
 
 # Next week — diff against baseline
 rp pipeline -i domains.txt -o target-week2.jsonl --allow allow.txt --deny deny.txt
