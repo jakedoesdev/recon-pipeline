@@ -4,11 +4,38 @@ import logging
 import re
 from pathlib import Path
 
+import tldextract
+
 from .log import provenance
 from .models import Host, ScopeInfo
 from .store import load_store, save_store
 
 logger = logging.getLogger(__name__)
+
+
+def generate_allow_file(domains: list[str], output_dir: Path) -> Path:
+    seen: set[str] = set()
+    entries: list[str] = []
+    for domain in domains:
+        ext = tldextract.extract(domain)
+        if ext.domain and ext.suffix:
+            apex = f"{ext.domain}.{ext.suffix}"
+            if apex not in seen:
+                seen.add(apex)
+                entries.append(f"*.{apex}")
+
+    allow_path = output_dir / "allow.txt"
+    allow_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+    logger.info("Generated %s with %d entries: %s", allow_path, len(entries), ", ".join(entries))
+    return allow_path
+
+
+def ensure_deny_file(output_dir: Path) -> Path:
+    deny_path = output_dir / "deny.txt"
+    if not deny_path.exists():
+        deny_path.write_text("", encoding="utf-8")
+        logger.info("Created empty %s", deny_path)
+    return deny_path
 
 
 def _load_patterns(path: str | None) -> list[str]:

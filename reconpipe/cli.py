@@ -10,6 +10,7 @@ from .enum.crtsh import query_crtsh
 from .log import close_provenance, init_provenance, setup_logging
 from .models import Host
 from .report import report_combined, report_headers, report_ips, report_subs, report_subs_ips
+from .scope import ensure_deny_file, generate_allow_file
 from .store import upsert_hosts
 
 
@@ -58,14 +59,21 @@ def report(input_path, view, scope, flagged_only, output, fmt):
 @click.option("--bbot-silent", is_flag=True, default=False, help="Suppress BBOT terminal output")
 @click.option("--crtsh/--no-crtsh", default=True)
 @click.option("-o", "--output", "output_path", required=True, help="JSONL output path")
-def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_path):
+@click.option("--allow", default=None, help="Allow-list file for scope")
+@click.option("--deny", default=None, help="Deny-list file for scope")
+@click.option("--auto-scope", is_flag=True, default=False, help="Auto-generate allow.txt from targets without prompting")
+def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_path, allow, deny, auto_scope):
     """Subdomain enumeration (BBOT + crt.sh)."""
-    init_provenance(Path(output_path))
+    from .scope import run_scope
 
     domains = _read_domains(input_path)
     if not domains:
         click.echo("No domains found in input file.", err=True)
         raise SystemExit(1)
+
+    allow, deny = _ensure_scope_files(input_path, domains, allow, deny, auto_scope)
+
+    init_provenance(Path(output_path))
 
     all_hosts: list[Host] = []
 
@@ -95,6 +103,10 @@ def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_pa
     else:
         click.echo("No subdomains discovered.", err=True)
 
+    if allow:
+        click.echo("━━━ Phase: scope ━━━", err=True)
+        run_scope(store_path=Path(output_path), allow_path=allow, deny_path=deny)
+
     close_provenance()
 
 
@@ -104,6 +116,70 @@ def _read_domains(path: str) -> list[str]:
         return []
     lines = p.read_text(encoding="utf-8").strip().splitlines()
     return [line.strip().lower() for line in lines if line.strip() and not line.startswith("#")]
+
+
+def _has_entries(path: str | None) -> bool:
+    if not path:
+        return False
+    p = Path(path)
+    if not p.exists():
+        return False
+    lines = [l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+    return len(lines) > 0
+
+
+def _preview_allow_entries(domains: list[str]) -> list[str]:
+    seen: set[str] = set()
+    entries: list[str] = []
+    for domain in domains:
+        ext = tldextract.extract(domain)
+        if ext.domain and ext.suffix:
+            apex = f"{ext.domain}.{ext.suffix}"
+            if apex not in seen:
+                seen.add(apex)
+                entries.append(f"*.{apex}")
+    return entries
+
+
+def _ensure_scope_files(
+    targets_path: str,
+    domains: list[str],
+    allow_path: str | None,
+    deny_path: str | None,
+    auto_scope: bool,
+) -> tuple[str | None, str | None]:
+    """Validate and/or generate scope files before enum.
+
+    Returns (allow_path, deny_path) to use for scoping after enum.
+    """
+    targets_dir = Path(targets_path).parent
+
+    if _has_entries(allow_path):
+        if not deny_path:
+            deny_path = str(ensure_deny_file(targets_dir))
+        return allow_path, deny_path
+
+    entries = _preview_allow_entries(domains)
+
+    if auto_scope:
+        allow_path = str(generate_allow_file(domains, targets_dir))
+        deny_path = deny_path or str(ensure_deny_file(targets_dir))
+        return allow_path, deny_path
+
+    click.echo("\nNo allow/deny scope files provided. These would be added to allow.txt:", err=True)
+    for entry in entries[:5]:
+        click.echo(f"  {entry}", err=True)
+    if len(entries) > 5:
+        click.echo(f"  ... and {len(entries) - 5} more", err=True)
+    click.echo("", err=True)
+
+    if click.confirm("Generate allow.txt and empty deny.txt?", default=True, err=True):
+        allow_path = str(generate_allow_file(domains, targets_dir))
+        deny_path = deny_path or str(ensure_deny_file(targets_dir))
+        return allow_path, deny_path
+
+    click.echo("Continuing without scope — all hosts will be 'unmatched'.", err=True)
+    return None, deny_path
 
 
 @cli.command()
@@ -253,13 +329,14 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
 @click.option("--scheme", type=click.Choice(["https", "http", "both"]), default="https")
 @click.option("--allow", default=None, help="Allow-list file for scope")
 @click.option("--deny", default=None, help="Deny-list file for scope")
+@click.option("--auto-scope", is_flag=True, default=False, help="Auto-generate allow.txt from targets without prompting")
 @click.option("--expected-country", default=None)
 @click.option("--rdap/--no-rdap", default=True)
 @click.option("--enrich-online/--no-enrich-online", default=False)
 @click.option("--refresh", is_flag=True, default=False, help="Re-check hosts that already have data from prior runs")
 def pipeline(
     input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
-    resolvers, concurrency, scheme, allow, deny,
+    resolvers, concurrency, scheme, allow, deny, auto_scope,
     rdap, expected_country, enrich_online, refresh,
 ):
     """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → analyze."""
@@ -271,24 +348,26 @@ def pipeline(
     from .scope import run_scope
     from .tls import run_tls
 
-    store = Path(output_path)
-    init_provenance(store)
-
-    # 1. Enum
-    click.echo("━━━ Phase: enum ━━━", err=True)
+    # Validate targets and scope files before any work
     domains = _read_domains(input_path)
     if not domains:
         click.echo("No domains found in input file.", err=True)
         raise SystemExit(1)
 
+    allow, deny = _ensure_scope_files(input_path, domains, allow, deny, auto_scope)
+
+    store = Path(output_path)
+    init_provenance(store)
+
+    # 1. Enum
+    click.echo("━━━ Phase: enum ━━━", err=True)
+
     all_hosts: list[Host] = []
     if crtsh:
         for domain in domains:
-            from .enum.crtsh import query_crtsh
             subs = query_crtsh(domain)
             click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
             for fqdn in subs:
-                import tldextract
                 ext = tldextract.extract(fqdn)
                 apex = f"{ext.domain}.{ext.suffix}"
                 all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
@@ -298,7 +377,6 @@ def pipeline(
             bbot_results = run_bbot(domains, preset=bbot_preset, silent=bbot_silent, store_path=store)
             click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
             for fqdn, source in bbot_results:
-                import tldextract
                 ext = tldextract.extract(fqdn)
                 apex = f"{ext.domain}.{ext.suffix}"
                 all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=[source]))
@@ -306,7 +384,6 @@ def pipeline(
             click.echo(f"[bbot] error: {e}", err=True)
 
     if all_hosts:
-        from .store import upsert_hosts
         result = upsert_hosts(store, all_hosts)
         click.echo(f"Store: {len(result)} total hosts", err=True)
     else:
@@ -314,11 +391,11 @@ def pipeline(
         raise SystemExit(1)
 
     # 2. Scope (run early so downstream phases skip denied hosts)
-    if allow or deny:
+    if allow:
         click.echo("━━━ Phase: scope ━━━", err=True)
         run_scope(store_path=store, allow_path=allow, deny_path=deny)
     else:
-        click.echo("━━━ Phase: scope (skipped — no allow/deny files) ━━━", err=True)
+        click.echo("━━━ Phase: scope (skipped — user declined) ━━━", err=True)
 
     # 3. Resolve
     click.echo("━━━ Phase: resolve ━━━", err=True)

@@ -11,6 +11,7 @@ reconpipe/config.py
 reconpipe/diff.py
 reconpipe/fingerprints.py
 reconpipe/headers.py
+reconpipe/log.py
 reconpipe/models.py
 reconpipe/rdap.py
 reconpipe/report.py
