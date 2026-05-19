@@ -605,14 +605,16 @@ def _check_lower_env(host: Host) -> bool:
     return False
 
 
-def _check_sans_new_subdomains(host: Host, all_fqdns: set[str]) -> bool:
+def _check_sans_new_subdomains(host: Host, all_fqdns: set[str]) -> set[str]:
+    """Returns set of SAN FQDNs not present in the store."""
+    new: set[str] = set()
     if not host.tls or not host.tls.sans:
-        return False
+        return new
     for san in host.tls.sans:
         san_lower = san.lower().lstrip("*.")
         if san_lower and san_lower not in all_fqdns:
-            return True
-    return False
+            new.add(san_lower)
+    return new
 
 
 async def _run_network_prepasses(
@@ -680,11 +682,11 @@ def run_analyze(
     expected_country: str | None = None,
     fingerprints_path: str | None = None,
     enrich_online: bool = False,
-) -> None:
+) -> set[str]:
     hosts = load_store(store_path)
     if not hosts:
         logger.warning("No hosts in store")
-        return
+        return set()
 
     in_scope_hosts = {fqdn: h for fqdn, h in hosts.items() if not is_out_of_scope(h)}
     logger.info("Analyzing %d hosts (%d skipped as out-of-scope)", len(in_scope_hosts), len(hosts) - len(in_scope_hosts))
@@ -700,6 +702,7 @@ def run_analyze(
     )
 
     # --- Main analysis loop (pure in-memory) ---
+    all_san_new_fqdns: set[str] = set()
     takeover_count = 0
     stale_count = 0
     geo_count = 0
@@ -811,8 +814,10 @@ def run_analyze(
             version_count += 1
 
         # TLS SANs contain subdomains not in the store
-        if _check_sans_new_subdomains(host, all_fqdns):
+        san_new = _check_sans_new_subdomains(host, all_fqdns)
+        if san_new:
             existing_flags.add("sans_new_subdomains")
+            all_san_new_fqdns.update(san_new)
 
         # Lower environment exposed publicly
         if _check_lower_env(host):
@@ -839,3 +844,8 @@ def run_analyze(
         tls_count, cors_count, cookie_count,
         status_count, version_count, lower_env_count, flagged_total,
     )
+
+    if all_san_new_fqdns:
+        logger.info("SAN-discovered FQDNs not in store: %d", len(all_san_new_fqdns))
+
+    return all_san_new_fqdns

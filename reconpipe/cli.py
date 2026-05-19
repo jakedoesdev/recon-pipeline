@@ -200,6 +200,14 @@ def _write_crtsh_rescan(store_path: Path, failures: list[str]) -> Path | None:
     return rescan_path
 
 
+def _write_sans_rescan(store_path: Path, fqdns: set[str]) -> Path | None:
+    if not fqdns:
+        return None
+    rescan_path = store_path.parent / "sans-rescan.txt"
+    rescan_path.write_text("\n".join(sorted(fqdns)) + "\n", encoding="utf-8")
+    return rescan_path
+
+
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True)
 @click.option("--resolvers", default="1.1.1.1,8.8.8.8,9.9.9.9")
@@ -326,12 +334,17 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
     from .analyze import run_analyze
 
     init_provenance(Path(input_path))
-    run_analyze(
+    san_new = run_analyze(
         store_path=Path(input_path),
         expected_country=expected_country,
         fingerprints_path=takeover_fingerprints,
         enrich_online=enrich_online,
     )
+
+    rescan_path = _write_sans_rescan(Path(input_path), san_new)
+    if rescan_path:
+        click.echo(f"\n⚠ {len(san_new)} SAN-discovered FQDN(s) not in store — saved to {rescan_path}", err=True)
+
     close_provenance()
 
 
@@ -446,16 +459,21 @@ def pipeline(
 
     # 8. Analyze
     click.echo("━━━ Phase: analyze ━━━", err=True)
-    run_analyze(
+    san_new = run_analyze(
         store_path=store,
         expected_country=expected_country,
         enrich_online=enrich_online,
     )
 
+    sans_rescan_path = _write_sans_rescan(store, san_new)
     rescan_path = _write_crtsh_rescan(store, crtsh_failures)
+    if rescan_path or sans_rescan_path:
+        click.echo("", err=True)
     if rescan_path:
-        click.echo(f"\n⚠ {len(crtsh_failures)} domain(s) failed crt.sh — saved to {rescan_path}", err=True)
+        click.echo(f"⚠ {len(crtsh_failures)} domain(s) failed crt.sh — saved to {rescan_path}", err=True)
         click.echo(f"  Re-run with: rp enum -i {rescan_path} -o {output_path} --no-bbot", err=True)
+    if sans_rescan_path:
+        click.echo(f"⚠ {len(san_new)} SAN-discovered FQDN(s) not in store — saved to {sans_rescan_path}", err=True)
 
     click.echo(f"━━━ Pipeline complete: {store} ━━━", err=True)
     close_provenance()
