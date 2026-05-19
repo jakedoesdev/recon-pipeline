@@ -40,12 +40,13 @@ def _fetch_json(domain: str) -> list[dict]:
 
 
 def query_crtsh(domain: str) -> list[str]:
+    """Query crt.sh for subdomains. Raises CrtshError if all retries fail."""
     logger.info("crt.sh query for %s", domain)
     try:
         entries = _fetch_json(domain)
     except Exception as e:
         logger.warning("crt.sh failed for %s after retries: %s", domain, e)
-        return []
+        raise CrtshError(f"crt.sh failed for {domain}: {e}") from e
 
     raw_names: set[str] = set()
     for entry in entries:

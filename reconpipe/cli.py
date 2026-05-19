@@ -6,7 +6,7 @@ import click
 import tldextract
 
 from .enum.bbot import BbotError, run_bbot
-from .enum.crtsh import query_crtsh
+from .enum.crtsh import CrtshError, query_crtsh
 from .log import close_provenance, init_provenance, setup_logging
 from .models import Host
 from .report import report_combined, report_headers, report_ips, report_subs, report_subs_ips
@@ -76,15 +76,20 @@ def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_pa
     init_provenance(Path(output_path))
 
     all_hosts: list[Host] = []
+    crtsh_failures: list[str] = []
 
     if crtsh:
         for domain in domains:
-            subs = query_crtsh(domain)
-            click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
-            for fqdn in subs:
-                ext = tldextract.extract(fqdn)
-                apex = f"{ext.domain}.{ext.suffix}"
-                all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
+            try:
+                subs = query_crtsh(domain)
+                click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
+                for fqdn in subs:
+                    ext = tldextract.extract(fqdn)
+                    apex = f"{ext.domain}.{ext.suffix}"
+                    all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
+            except CrtshError:
+                click.echo(f"[crtsh] {domain}: FAILED — queued for rescan", err=True)
+                crtsh_failures.append(domain)
 
     if bbot:
         try:
@@ -106,6 +111,11 @@ def enum(input_path, bbot, bbot_preset, bbot_args, bbot_silent, crtsh, output_pa
     if allow:
         click.echo("━━━ Phase: scope ━━━", err=True)
         run_scope(store_path=Path(output_path), allow_path=allow, deny_path=deny)
+
+    rescan_path = _write_crtsh_rescan(Path(output_path), crtsh_failures)
+    if rescan_path:
+        click.echo(f"\n⚠ {len(crtsh_failures)} domain(s) failed crt.sh — saved to {rescan_path}", err=True)
+        click.echo(f"  Re-run with: rp enum -i {rescan_path} -o {output_path} --no-bbot", err=True)
 
     close_provenance()
 
@@ -180,6 +190,14 @@ def _ensure_scope_files(
 
     click.echo("Continuing without scope — all hosts will be 'unmatched'.", err=True)
     return None, deny_path
+
+
+def _write_crtsh_rescan(store_path: Path, failures: list[str]) -> Path | None:
+    if not failures:
+        return None
+    rescan_path = store_path.parent / "crtsh-rescan.txt"
+    rescan_path.write_text("\n".join(failures) + "\n", encoding="utf-8")
+    return rescan_path
 
 
 @cli.command()
@@ -363,14 +381,19 @@ def pipeline(
     click.echo("━━━ Phase: enum ━━━", err=True)
 
     all_hosts: list[Host] = []
+    crtsh_failures: list[str] = []
     if crtsh:
         for domain in domains:
-            subs = query_crtsh(domain)
-            click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
-            for fqdn in subs:
-                ext = tldextract.extract(fqdn)
-                apex = f"{ext.domain}.{ext.suffix}"
-                all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
+            try:
+                subs = query_crtsh(domain)
+                click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
+                for fqdn in subs:
+                    ext = tldextract.extract(fqdn)
+                    apex = f"{ext.domain}.{ext.suffix}"
+                    all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
+            except CrtshError:
+                click.echo(f"[crtsh] {domain}: FAILED — queued for rescan", err=True)
+                crtsh_failures.append(domain)
 
     if bbot:
         try:
@@ -428,6 +451,11 @@ def pipeline(
         expected_country=expected_country,
         enrich_online=enrich_online,
     )
+
+    rescan_path = _write_crtsh_rescan(store, crtsh_failures)
+    if rescan_path:
+        click.echo(f"\n⚠ {len(crtsh_failures)} domain(s) failed crt.sh — saved to {rescan_path}", err=True)
+        click.echo(f"  Re-run with: rp enum -i {rescan_path} -o {output_path} --no-bbot", err=True)
 
     click.echo(f"━━━ Pipeline complete: {store} ━━━", err=True)
     close_provenance()
