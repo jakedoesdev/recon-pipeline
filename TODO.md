@@ -16,7 +16,7 @@
 
 8. **Infrastructure ownership bucketing** — Sort hosts into buckets: likely client/target-controlled, CDN/proxy front-ends, and out-of-scope SaaS services. Primary bucket should be things the client likely owns/controls directly. Could add more buckets as needed. Include bucket assignment in report output or integrate into an existing module (likely `analyze`). Goal: know what entity or group of related entities owns the infrastructure behind each host.
 
-9. **Clean output for tool ingestion** — Hosts that resolve to private IPs should not appear in `subs`, `subs-ips`, or `ips` output views. Private IPs should not appear in `ips` output. IPv6 addresses should be excluded from `subs` and `subs-ips` output (users query IPv6 directly when needed). Private-IP hosts and IPv6 data get their own dedicated output options. Goal: `subs`, `subs-ips`, and `ips` outputs are ready to feed directly into Nessus or other scanning tools without manual filtering.
+9. ~~**Clean output for tool ingestion**~~ — Partial. `subs` excludes hosts that resolve only to private IPs. `subs-ips` excludes private IP rows. `ips` already excluded private IPs. New `--view private` shows hosts with private IPs (fqdn,ip,record_type CSV). IPv6 filtering not yet implemented.
 
 10. ~~**Proper IP sorting by octets**~~ — Done. `ips` view sorts by `ipaddress.ip_address` (numeric octets). `diff` IP comparisons also sort numerically. IPv6 addresses sort after IPv4.
 

@@ -12,6 +12,18 @@ from .models import Host
 from .store import load_store
 
 
+def _has_public_ip(host: Host) -> bool:
+    if not host.dns or not host.dns.resolved_ips:
+        return False
+    return any(not rip.is_private for rip in host.dns.resolved_ips)
+
+
+def _resolves_only_private(host: Host) -> bool:
+    if not host.dns or not host.dns.resolved_ips:
+        return False
+    return all(rip.is_private for rip in host.dns.resolved_ips)
+
+
 def report_subs(store_path: Path | str, scope: list[str], output: str | None, **kwargs) -> None:
     hosts = load_store(Path(store_path))
     flagged_only = kwargs.get("flagged_only", False)
@@ -20,6 +32,8 @@ def report_subs(store_path: Path | str, scope: list[str], output: str | None, **
         if not _scope_matches(host, scope):
             continue
         if flagged_only and not _has_flags(host):
+            continue
+        if _resolves_only_private(host):
             continue
         lines.append(host.fqdn)
 
@@ -60,6 +74,30 @@ def report_subs_ips(store_path: Path | str, scope: list[str], output: str | None
         if not host.dns:
             continue
         for rip in host.dns.resolved_ips:
+            if rip.is_private:
+                continue
+            writer.writerow([host.fqdn, rip.ip, rip.record_type])
+
+    _write_output(buf.getvalue(), output)
+
+
+def report_private(store_path: Path | str, scope: list[str], output: str | None, **kwargs) -> None:
+    hosts = load_store(Path(store_path))
+    flagged_only = kwargs.get("flagged_only", False)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["fqdn", "ip", "record_type"])
+    for host in sorted(hosts.values(), key=lambda h: h.fqdn):
+        if not _scope_matches(host, scope):
+            continue
+        if flagged_only and not _has_flags(host):
+            continue
+        if not host.dns:
+            continue
+        private_ips = [rip for rip in host.dns.resolved_ips if rip.is_private]
+        if not private_ips:
+            continue
+        for rip in private_ips:
             writer.writerow([host.fqdn, rip.ip, rip.record_type])
 
     _write_output(buf.getvalue(), output)

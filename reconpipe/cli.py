@@ -9,7 +9,7 @@ from .enum.bbot import BbotError, run_bbot
 from .enum.crtsh import CrtshError, query_crtsh
 from .log import close_provenance, init_provenance, setup_logging
 from .models import Host
-from .report import report_combined, report_headers, report_ips, report_subs, report_subs_ips
+from .report import report_combined, report_headers, report_ips, report_private, report_subs, report_subs_ips
 from .scope import ensure_deny_file, generate_allow_file
 from .store import upsert_hosts
 
@@ -27,7 +27,7 @@ def cli(verbose, quiet, log_file):
 
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True, help="JSONL store path")
-@click.option("--view", type=click.Choice(["subs", "ips", "subs-ips", "headers", "combined"]), default="combined")
+@click.option("--view", type=click.Choice(["subs", "ips", "subs-ips", "private", "headers", "combined"]), default="combined")
 @click.option("--scope", default="in", help="Scope bucket(s): in, unmatched, out, all (comma-separated)")
 @click.option("--flagged-only", is_flag=True, default=False)
 @click.option("-o", "--output", default=None, help="Output file (default: stdout)")
@@ -42,6 +42,8 @@ def report(input_path, view, scope, flagged_only, output, fmt):
         report_ips(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "subs-ips":
         report_subs_ips(input_path, scope_list, output, flagged_only=flagged_only)
+    elif view == "private":
+        report_private(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "headers":
         report_headers(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "combined":
