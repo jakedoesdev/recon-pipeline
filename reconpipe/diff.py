@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import sys
 from dataclasses import asdict
@@ -42,16 +43,29 @@ def _resolve_ip_key(rip) -> str:
     return f"{rip.ip}({rip.record_type})"
 
 
+def _ip_sort_key(ip_str: str) -> tuple:
+    try:
+        return (0, ipaddress.ip_address(ip_str).packed)
+    except ValueError:
+        return (1, ip_str)
+
+
 def _resolved_ips_repr(host: Host) -> list[str] | None:
     if not host.dns or not host.dns.resolved_ips:
         return None
-    return sorted(_resolve_ip_key(rip) for rip in host.dns.resolved_ips)
+    return sorted(
+        (_resolve_ip_key(rip) for rip in host.dns.resolved_ips),
+        key=lambda s: _ip_sort_key(s.split("(")[0]),
+    )
 
 
 def _leaked_ips_repr(host: Host) -> list[str] | None:
     if not host.headers or not host.headers.leaked_ips:
         return None
-    return sorted(f"{lip.ip}({lip.source})" for lip in host.headers.leaked_ips)
+    return sorted(
+        (f"{lip.ip}({lip.source})" for lip in host.headers.leaked_ips),
+        key=lambda s: _ip_sort_key(s.split("(")[0]),
+    )
 
 
 def _get_comparable(host: Host, field: str):

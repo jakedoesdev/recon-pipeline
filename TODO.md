@@ -10,7 +10,7 @@
 
 5. ~~**`rp add` — manual host injection**~~ — Done. `rp add -o store.jsonl` accepts FQDNs via `-i <file>` and/or positional args. Creates store records with `discovery_sources: ["manual"]` (customizable via `--source`). Merges with existing records. No network calls — designed to work with `sans-rescan.txt` and `crtsh-rescan.txt` for adding hosts discovered out-of-band.
 
-6. **SAN-discovered host rescan** — When `analyze` flags `sans_new_subdomains`, save those FQDNs to a `sans-rescan.txt` file for potential re-scanning and addition to the store. Should integrate with `rp add` and the crt.sh retry flow so newly discovered domains/subdomains are added to the store and processed through all modules.
+6. ~~**SAN-discovered host rescan**~~ — Done. `analyze` saves SAN-discovered FQDNs to `sans-rescan.txt` next to the store. Integrates with `rp add` for adding them back to the store (e.g., `rp add -o store.jsonl -i sans-rescan.txt --source sans-rescan`).
 
 7. ~~**Private IP extraction from headers/errors**~~ — Done. `headers` extracts private IPs from response headers (Location, Via, X-Forwarded-For, X-Real-IP, X-Backend-Server, and all X-* headers), redirect chain Location headers, and response body. Stored as `headers.leaked_ips[]` with ip, source, and detail context. `analyze` flags as `private_ip_leaked` (high severity).
 
@@ -18,7 +18,7 @@
 
 9. **Clean output for tool ingestion** — Hosts that resolve to private IPs should not appear in `subs`, `subs-ips`, or `ips` output views. Private IPs should not appear in `ips` output. IPv6 addresses should be excluded from `subs` and `subs-ips` output (users query IPv6 directly when needed). Private-IP hosts and IPv6 data get their own dedicated output options. Goal: `subs`, `subs-ips`, and `ips` outputs are ready to feed directly into Nessus or other scanning tools without manual filtering.
 
-10. **Proper IP sorting by octets** — When outputting IPs in any module or report view, sort by octets numerically (e.g., `4.13.x.x` < `4.56.x.x` < `12.32.x.x`), not lexicographically by first digit. Applies to `ips` view, `subs-ips` view, and any other IP-ordered output.
+10. ~~**Proper IP sorting by octets**~~ — Done. `ips` view sorts by `ipaddress.ip_address` (numeric octets). `diff` IP comparisons also sort numerically. IPv6 addresses sort after IPv4.
 
 11. ~~**WPScan integration**~~ — Done. `rp wpscan` module runs WPScan against WordPress hosts detected by `headers` technology fingerprinting. Subprocess wrapper with JSON parsing, API key via `keys.toml` (optional — warns if missing). Stores `WpscanInfo` on the host: wp_version, theme, plugins (with versions), vulnerabilities/CVEs, interesting findings. Raw JSON saved to `wpscan_out/`. Integrated into pipeline between rdap and analyze. `analyze` flags: `wp_vulns`, `wp_outdated`, `wp_theme_outdated`, `wp_plugins_outdated`.
 

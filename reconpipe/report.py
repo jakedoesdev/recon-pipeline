@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import ipaddress
 import json
 import sys
 from dataclasses import asdict
@@ -42,7 +43,7 @@ def report_ips(store_path: Path | str, scope: list[str], output: str | None, **k
                 continue
             ips.add(rip.ip)
 
-    _write_output("\n".join(sorted(ips)), output)
+    _write_output("\n".join(sorted(ips, key=ipaddress.ip_address)), output)
 
 
 def report_subs_ips(store_path: Path | str, scope: list[str], output: str | None, **kwargs) -> None:
