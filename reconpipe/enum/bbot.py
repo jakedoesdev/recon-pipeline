@@ -27,29 +27,36 @@ class BbotError(Exception):
     pass
 
 
-def _write_secrets_yaml(tmpdir: Path) -> Path:
-    """Write a BBOT secrets YAML from keys.toml. Returns path to the file."""
+_KEY_MODULE_MAP = {
+    "shodan": "shodan",
+    "securitytrails": "securitytrails",
+    "virustotal": "virustotal",
+    "urlscan": "urlscan",
+    "chaos": "chaos",
+    "github": "github_codesearch",
+}
+
+
+def _write_wrapper_preset(tmpdir: Path, base_preset: str) -> tuple[str, bool]:
+    """Write a wrapper preset that includes the base preset and injects API keys.
+
+    Returns (preset_path_to_use, has_keys).
+    """
     keys = load_keys()
-    secrets_path = tmpdir / "bbot_secrets.yml"
 
     bbot_keys: dict[str, dict] = {}
-    key_module_map = {
-        "shodan": "shodan_dns",
-        "securitytrails": "securitytrails",
-        "virustotal": "virustotal",
-        "urlscan": "urlscan",
-        "chaos": "chaos",
-        "github": "github_codesearch",
-    }
-
-    for our_key, bbot_module in key_module_map.items():
+    for our_key, bbot_module in _KEY_MODULE_MAP.items():
         val = keys.get(our_key, "")
         if val:
             bbot_keys[bbot_module] = {"api_key": val}
 
-    secrets = {"modules": bbot_keys} if bbot_keys else {}
-    secrets_path.write_text(yaml.dump(secrets, default_flow_style=False), encoding="utf-8")
-    return secrets_path
+    if not bbot_keys:
+        return base_preset, False
+
+    wrapper: dict = {"include": [base_preset], "config": {"modules": bbot_keys}}
+    wrapper_path = tmpdir / "reconpipe_preset.yml"
+    wrapper_path.write_text(yaml.dump(wrapper, default_flow_style=False), encoding="utf-8")
+    return str(wrapper_path), True
 
 
 def _find_output_json(output_dir: Path) -> Path | None:
@@ -149,12 +156,14 @@ def run_bbot(
         output_dir = tmpdir_path / "output"
         output_dir.mkdir()
 
-        secrets_path = _write_secrets_yaml(tmpdir_path)
+        preset_to_use, has_keys = _write_wrapper_preset(tmpdir_path, preset_value)
+        if has_keys:
+            logger.info("API keys injected via wrapper preset")
 
         cmd = [
             "bbot",
             "-t", *targets,
-            "-p", preset_value,
+            "-p", preset_to_use,
             "-o", str(output_dir),
             "-n", "reconpipe",
             "-y",
@@ -162,11 +171,6 @@ def run_bbot(
 
         if silent:
             cmd.append("--silent")
-
-        # Only pass secrets file if we have keys
-        keys = load_keys()
-        if keys:
-            cmd.extend(["-c", f"secrets_file={secrets_path}"])
 
         if extra_args:
             cmd.extend(extra_args.split())
