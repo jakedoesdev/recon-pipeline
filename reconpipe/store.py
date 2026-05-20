@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     AnalysisInfo,
@@ -35,6 +38,7 @@ def _rebuild_host(raw: dict) -> Host:
             cname_chain=d.get("cname_chain", []),
             resolved_ips=resolved_ips,
             nxdomain=d.get("nxdomain", False),
+            resolution_error=d.get("resolution_error", False),
             resolver_used=d.get("resolver_used", ""),
             resolved_at=d.get("resolved_at", ""),
         )
@@ -100,12 +104,20 @@ def load_store(path: Path) -> dict[str, Host]:
             host = _rebuild_host(raw)
             hosts[host.fqdn] = host
     else:
-        for line in content.splitlines():
+        for lineno, line in enumerate(content.splitlines(), 1):
             line = line.strip()
             if not line:
                 continue
-            raw = json.loads(line)
-            host = _rebuild_host(raw)
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError as e:
+                logger.warning("Skipping malformed JSONL at %s line %d: %s", path, lineno, e)
+                continue
+            try:
+                host = _rebuild_host(raw)
+            except (KeyError, TypeError) as e:
+                logger.warning("Skipping unreadable record at %s line %d: %s", path, lineno, e)
+                continue
             hosts[host.fqdn] = host
     return hosts
 

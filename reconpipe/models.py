@@ -32,6 +32,7 @@ class DnsInfo:
     cname_chain: list[str] = field(default_factory=list)
     resolved_ips: list[ResolvedIp] = field(default_factory=list)
     nxdomain: bool = False
+    resolution_error: bool = False
     resolver_used: str = ""
     resolved_at: str = ""
 

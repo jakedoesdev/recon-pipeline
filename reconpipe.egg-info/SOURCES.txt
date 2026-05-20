@@ -4,6 +4,7 @@ README.md
 TODO.md
 pyproject.toml
 recon-pipe-design.md
+.claude/settings.local.json
 reconpipe/__init__.py
 reconpipe/analyze.py
 reconpipe/cli.py

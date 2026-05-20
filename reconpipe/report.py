@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import sys
 from dataclasses import asdict
@@ -46,7 +48,9 @@ def report_ips(store_path: Path | str, scope: list[str], output: str | None, **k
 def report_subs_ips(store_path: Path | str, scope: list[str], output: str | None, **kwargs) -> None:
     hosts = load_store(Path(store_path))
     flagged_only = kwargs.get("flagged_only", False)
-    lines: list[str] = ["fqdn,ip,record_type"]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["fqdn", "ip", "record_type"])
     for host in sorted(hosts.values(), key=lambda h: h.fqdn):
         if not _scope_matches(host, scope):
             continue
@@ -55,15 +59,17 @@ def report_subs_ips(store_path: Path | str, scope: list[str], output: str | None
         if not host.dns:
             continue
         for rip in host.dns.resolved_ips:
-            lines.append(f"{host.fqdn},{rip.ip},{rip.record_type}")
+            writer.writerow([host.fqdn, rip.ip, rip.record_type])
 
-    _write_output("\n".join(lines), output)
+    _write_output(buf.getvalue(), output)
 
 
 def report_headers(store_path: Path | str, scope: list[str], output: str | None, **kwargs) -> None:
     hosts = load_store(Path(store_path))
     flagged_only = kwargs.get("flagged_only", False)
-    lines: list[str] = ["fqdn,status,grade,source,missing_headers,present_headers"]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["fqdn", "status", "grade", "source", "missing_headers", "present_headers"])
     for host in sorted(hosts.values(), key=lambda h: h.fqdn):
         if not _scope_matches(host, scope):
             continue
@@ -74,11 +80,9 @@ def report_headers(store_path: Path | str, scope: list[str], output: str | None,
         missing = "|".join(host.headers.missing)
         present = "|".join(host.headers.present.keys())
         grade = host.headers.grade or ""
-        lines.append(
-            f"{host.fqdn},{host.headers.status_code},{grade},{host.headers.source},{missing},{present}"
-        )
+        writer.writerow([host.fqdn, host.headers.status_code, grade, host.headers.source, missing, present])
 
-    _write_output("\n".join(lines), output)
+    _write_output(buf.getvalue(), output)
 
 
 def report_combined(
@@ -138,9 +142,10 @@ def _write_combined_bucket(
 
 
 def _write_combined_csv(hosts: list[Host], output: str | None) -> None:
-    lines: list[str] = [
-        "fqdn,apex,discovery_sources,scope_status,a_records,cname_chain,flags,header_grade,missing_headers"
-    ]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["fqdn", "apex", "discovery_sources", "scope_status", "a_records",
+                      "cname_chain", "flags", "header_grade", "missing_headers"])
     for host in hosts:
         sources = "|".join(host.discovery_sources)
         scope_status = host.scope.status if host.scope else ""
@@ -149,9 +154,9 @@ def _write_combined_csv(hosts: list[Host], output: str | None) -> None:
         flags = "|".join(host.analysis.flags) if host.analysis else ""
         grade = host.headers.grade or "" if host.headers else ""
         missing = "|".join(host.headers.missing) if host.headers else ""
-        lines.append(f"{host.fqdn},{host.apex},{sources},{scope_status},{a_records},{cname},{flags},{grade},{missing}")
+        writer.writerow([host.fqdn, host.apex, sources, scope_status, a_records, cname, flags, grade, missing])
 
-    _write_output("\n".join(lines), output)
+    _write_output(buf.getvalue(), output)
 
 
 def _filter_hosts(hosts: dict[str, Host], scope: list[str], flagged_only: bool) -> list[Host]:

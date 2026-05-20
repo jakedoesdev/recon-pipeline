@@ -33,15 +33,24 @@ def _random_label() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
 
 
+class _NXDomain(Exception):
+    pass
+
+
 async def _resolve_record(
     resolver: dns.asyncresolver.Resolver,
     fqdn: str,
     rdtype: str,
+    raise_nxdomain: bool = False,
 ) -> list[str]:
     try:
         answer = await resolver.resolve(fqdn, rdtype)
         return [rdata.to_text().rstrip(".") for rdata in answer]
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers):
+    except dns.resolver.NXDOMAIN:
+        if raise_nxdomain:
+            raise _NXDomain()
+        return []
+    except (dns.resolver.NoAnswer, dns.resolver.NoNameservers):
         return []
     except dns.exception.Timeout:
         return []
@@ -70,21 +79,6 @@ async def _walk_cname_chain(
     return chain
 
 
-async def _check_nxdomain(
-    resolver: dns.asyncresolver.Resolver,
-    fqdn: str,
-) -> bool:
-    try:
-        await resolver.resolve(fqdn, "A")
-        return False
-    except dns.resolver.NXDOMAIN:
-        return True
-    except (dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.Timeout):
-        return False
-    except Exception:
-        return False
-
-
 async def _resolve_host(
     resolver: dns.asyncresolver.Resolver,
     host: Host,
@@ -92,9 +86,9 @@ async def _resolve_host(
     asn_lookup: object | None,
     country_lookup: object | None,
 ) -> Host:
-    nxdomain = await _check_nxdomain(resolver, host.fqdn)
-
-    if nxdomain:
+    try:
+        a_records = await _resolve_record(resolver, host.fqdn, "A", raise_nxdomain=True)
+    except _NXDomain:
         host.dns = DnsInfo(
             nxdomain=True,
             resolver_used=resolver_str,
@@ -104,7 +98,6 @@ async def _resolve_host(
                    resolver=resolver_str, nxdomain=True)
         return host
 
-    a_records = await _resolve_record(resolver, host.fqdn, "A")
     aaaa_records = await _resolve_record(resolver, host.fqdn, "AAAA")
     txt_records = await _resolve_record(resolver, host.fqdn, "TXT")
     mx_records = await _resolve_record(resolver, host.fqdn, "MX")
@@ -135,6 +128,10 @@ async def _resolve_host(
             _enrich_ip(rip, asn_lookup, country_lookup)
             resolved_ips.append(rip)
 
+    # A CNAME chain with no resolved IPs (and not NXDOMAIN) suggests a transient
+    # resolution failure rather than a genuinely dangling record.
+    resolution_error = bool(cname_chain and not resolved_ips)
+
     host.dns = DnsInfo(
         a=a_records,
         aaaa=aaaa_records,
@@ -144,6 +141,7 @@ async def _resolve_host(
         cname_chain=cname_chain,
         resolved_ips=resolved_ips,
         nxdomain=False,
+        resolution_error=resolution_error,
         resolver_used=resolver_str,
         resolved_at=_now_iso(),
     )

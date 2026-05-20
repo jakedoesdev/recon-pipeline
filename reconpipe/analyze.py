@@ -55,6 +55,8 @@ def _is_stale_cname_candidate(host: Host) -> str | None:
     """Returns the final CNAME target if it needs an unregistered check, or None."""
     if not host.dns or not host.dns.cname_chain:
         return None
+    if host.dns.resolution_error:
+        return None
     if not host.dns.resolved_ips and not host.dns.nxdomain:
         return ""
     return host.dns.cname_chain[-1]
@@ -113,7 +115,7 @@ def _match_takeover_cname(
         matched_cname = any(pat.lower() in chain_str for pat in fp.cname_patterns)
         if not matched_cname:
             continue
-        if fp.nxdomain_vulnerable and not host.dns.resolved_ips:
+        if fp.nxdomain_vulnerable and not host.dns.resolved_ips and not host.dns.resolution_error:
             return fp.service, []
         if host.headers and host.headers.body_snippet:
             if _check_body_patterns(host.headers.body_snippet, fp):
