@@ -75,8 +75,18 @@ class ScopeInfo:
 
 
 @dataclass
+class RdapContact:
+    role: str
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    org: str | None = None
+
+
+@dataclass
 class RdapInfo:
     registrar: str | None = None
+    contacts: list[RdapContact] = field(default_factory=list)
     registered_at: str | None = None
     expires_at: str | None = None
     statuses: list[str] = field(default_factory=list)

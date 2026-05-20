@@ -140,12 +140,25 @@ Populated by `rp rdap`. Contains RDAP registration data queried once per apex do
 | Field | Type | Description |
 |---|---|---|
 | `registrar` | string or null | The domain registrar (e.g. `"Cloudflare, Inc."`, `"GoDaddy.com, LLC"`). Useful for correlating infrastructure ownership. |
+| `contacts` | list | Contact entities from the RDAP response. Each entry is an `RdapContact` object (see below). Typical roles: `registrant`, `administrative`, `technical`, `abuse`, `registrar`. |
 | `registered_at` | string or null | ISO 8601 timestamp of when the domain was first registered. |
 | `expires_at` | string or null | ISO 8601 timestamp of when the domain registration expires. Domains expiring soon are flagged by analyze. |
 | `statuses` | list | ICANN domain status codes (e.g. `["clientTransferProhibited", "clientDeleteProhibited"]`). Statuses like `pendingDelete`, `redemptionPeriod`, `serverHold`, or `clientHold` indicate domains in risky transition states. |
 | `nameservers` | list | Nameservers registered with the registry (as opposed to what DNS resolves). Differences between these and `dns.ns` can indicate stale delegation. |
 | `dnssec` | bool or null | Whether DNSSEC delegation signing is active. `false` means the domain is not DNSSEC-signed. `null` if the RDAP response didn't include this field. |
 | `queried_at` | string | ISO 8601 timestamp of when the RDAP lookup was performed. |
+
+### contacts[] (RdapContact)
+
+Each entry in `rdap.contacts`:
+
+| Field | Type | Description |
+|---|---|---|
+| `role` | string | The entity's role: `"registrant"`, `"administrative"`, `"technical"`, `"abuse"`, `"registrar"`, etc. A single entity with multiple roles produces one entry per role. |
+| `name` | string or null | Formatted name from the vCard `fn` field, or the entity handle if no name is available. Often redacted for privacy (e.g. `"REDACTED FOR PRIVACY"`). |
+| `email` | string or null | Contact email address. Frequently a privacy proxy address. |
+| `phone` | string or null | Contact phone number. |
+| `org` | string or null | Organization name from the vCard `org` field. |
 
 ### wpscan (WpscanInfo)
 
@@ -718,6 +731,21 @@ rpq | jq -r 'select(.rdap != null) | .rdap.registrar // "unknown"' | sort | uniq
 **Domains expiring within 90 days (raw RDAP field):**
 ```bash
 rpq | jq 'select(.rdap.expires_at != null) | {fqdn, apex, expires: .rdap.expires_at}'
+```
+
+**RDAP contact details (abuse, registrant, tech, admin):**
+```bash
+rpq | jq 'select(.rdap != null and (.rdap.contacts | length > 0)) | {apex, contacts: .rdap.contacts}'
+```
+
+**Abuse contacts across all domains:**
+```bash
+rpq | jq -r '.rdap.contacts[]? | select(.role == "abuse" and .email != null) | .email' | sort -u
+```
+
+**Registrant names (often redacted):**
+```bash
+rpq | jq -r 'select(.rdap != null) | "\(.apex)\t\([.rdap.contacts[]? | select(.role == "registrant") | .name // "unknown"] | first // "none")"' | sort -u -t$'\t' -k1,1
 ```
 
 **Compare RDAP nameservers vs DNS NS records:**

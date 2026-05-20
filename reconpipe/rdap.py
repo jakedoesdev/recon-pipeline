@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 
 from .log import provenance
-from .models import RdapInfo, _now_iso
+from .models import RdapContact, RdapInfo, _now_iso
 from .store import is_out_of_scope, load_store, save_store
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,39 @@ def _has_dnssec(raw: dict) -> bool | None:
     return bool(sec_dns.get("delegationSigned", False))
 
 
+def _vcard_str(value: object) -> str | None:
+    """Coerce a jCard value to a string. Handles str, list-of-str, and nested lists."""
+    if isinstance(value, str):
+        return value if value else None
+    if isinstance(value, list):
+        parts = [p for p in value if isinstance(p, str) and p]
+        return ", ".join(parts) if parts else None
+    return None
+
+
+def _parse_vcard(vcard_array: list | None) -> tuple[str | None, str | None, str | None, str | None]:
+    """Extract name, email, phone, org from a jCard vcardArray (RFC 7095)."""
+    if not vcard_array or len(vcard_array) < 2:
+        return None, None, None, None
+    name = email = phone = org = None
+    for item in vcard_array[1]:
+        if not isinstance(item, list) or len(item) < 4:
+            continue
+        field_type = item[0]
+        value = item[3]
+        if field_type == "fn":
+            name = _vcard_str(value)
+        elif field_type == "email":
+            email = _vcard_str(value)
+        elif field_type == "tel":
+            phone = _vcard_str(value)
+            if phone and phone.startswith("tel:"):
+                phone = phone[4:]
+        elif field_type == "org":
+            org = _vcard_str(value)
+    return name, email, phone, org
+
+
 def _fetch_rdap(apex: str) -> RdapInfo | None:
     url = f"{RDAP_BOOTSTRAP}{apex}"
     try:
@@ -59,17 +92,27 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
 
             entities = data.get("entities", [])
             registrar = None
+            contacts: list[RdapContact] = []
+
             for ent in entities:
                 roles = ent.get("roles", [])
+                if not roles:
+                    continue
+
+                name, email, phone, org = _parse_vcard(ent.get("vcardArray"))
+                handle = ent.get("handle")
+
                 if "registrar" in roles:
-                    vcards = ent.get("vcardArray", [None, []])
-                    for item in (vcards[1] if len(vcards) > 1 else []):
-                        if item[0] == "fn":
-                            registrar = item[3]
-                            break
-                    if not registrar:
-                        registrar = ent.get("handle")
-                    break
+                    registrar = name or handle
+
+                for role in roles:
+                    contacts.append(RdapContact(
+                        role=role,
+                        name=name or handle,
+                        email=email,
+                        phone=phone,
+                        org=org,
+                    ))
 
             registered, expires = _parse_events(data.get("events", []))
             nameservers = _parse_nameservers(data.get("nameservers", []))
@@ -78,6 +121,7 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
 
             info = RdapInfo(
                 registrar=registrar,
+                contacts=contacts,
                 registered_at=registered,
                 expires_at=expires,
                 statuses=statuses,
@@ -88,7 +132,9 @@ def _fetch_rdap(apex: str) -> RdapInfo | None:
             provenance(
                 module="rdap", action="rdap_query", fqdn=apex,
                 url=url, status_code=resp.status_code,
-                registrar=registrar, registered_at=registered,
+                registrar=registrar,
+                contacts=[{"role": c.role, "name": c.name, "email": c.email} for c in contacts],
+                registered_at=registered,
                 expires_at=expires, statuses=statuses,
                 nameservers=nameservers, dnssec=dnssec,
             )

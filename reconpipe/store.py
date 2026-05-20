@@ -10,6 +10,7 @@ from .models import (
     HeaderInfo,
     Host,
     LeakedIp,
+    RdapContact,
     RdapInfo,
     ResolvedIp,
     ScopeInfo,
@@ -54,7 +55,9 @@ def _rebuild_host(raw: dict) -> Host:
 
     rdap = None
     if raw.get("rdap"):
-        rdap = RdapInfo(**raw["rdap"])
+        r = dict(raw["rdap"])
+        r["contacts"] = [RdapContact(**c) for c in (r.get("contacts") or [])]
+        rdap = RdapInfo(**r)
 
     tls = None
     if raw.get("tls"):

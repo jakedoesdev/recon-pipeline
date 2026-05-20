@@ -349,7 +349,7 @@ Compares two snapshots and reports:
 | Reverse | `reconpipe/reverse.py` | PTR (reverse DNS) lookups on discovered public IPs |
 | Headers | `reconpipe/headers.py` | Security header checks, page title/technology detection, cookie analysis, private IP leak extraction |
 | TLS | `reconpipe/tls.py` | Live TLS certificate collection (subject, issuer, SANs, expiry) |
-| RDAP | `reconpipe/rdap.py` | RDAP registration lookups per apex (registrar, expiry, status, DNSSEC) |
+| RDAP | `reconpipe/rdap.py` | RDAP registration lookups per apex (registrar, contacts, expiry, status, DNSSEC) |
 | Scope | `reconpipe/scope.py` | Three-state classification with exact/wildcard/regex pattern matching |
 | WPScan | `reconpipe/wpscan.py` | WPScan subprocess wrapper, JSON parsing, WordPress vulnerability detection |
 | Analyze | `reconpipe/analyze.py` | Anomaly detection, takeover fingerprinting, TLS/CORS/cookie/WPScan checks, severity ratings |
@@ -407,6 +407,11 @@ All data lives in a single JSONL file (one JSON object per line, keyed by FQDN).
   },
   "rdap": {
     "registrar": "Cloudflare, Inc.",
+    "contacts": [
+      {"role": "registrar", "name": "Cloudflare, Inc.", "email": null, "phone": null, "org": null},
+      {"role": "abuse", "name": "Cloudflare, Inc.", "email": "abuse@cloudflare.com", "phone": "+1.6503198930", "org": "Cloudflare, Inc."},
+      {"role": "registrant", "name": "REDACTED FOR PRIVACY", "email": "proxy@example.com", "phone": null, "org": null}
+    ],
     "registered_at": "2020-01-15T00:00:00Z",
     "expires_at": "2027-01-15T00:00:00Z",
     "statuses": ["clientTransferProhibited"],
