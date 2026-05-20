@@ -481,11 +481,11 @@ def pipeline(
 
     # 5. Headers
     click.echo("━━━ Phase: headers ━━━", err=True)
-    run_headers(store_path=store, scheme=scheme, refresh=refresh, concurrency=concurrency)
+    run_headers(store_path=store, scheme=scheme, refresh=refresh, concurrency=min(concurrency, 20))
 
     # 6. TLS
     click.echo("━━━ Phase: tls ━━━", err=True)
-    run_tls(store_path=store, refresh=refresh, concurrency=concurrency)
+    run_tls(store_path=store, refresh=refresh, concurrency=min(concurrency, 30))
 
     # 7. RDAP
     if rdap:
