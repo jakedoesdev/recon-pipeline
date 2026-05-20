@@ -8,7 +8,7 @@
 
 4. ~~**Resilient crt.sh with deferred retry**~~ — Partial. `query_crtsh` now raises `CrtshError` on failure (after existing 4-attempt retry). Failed domains are saved to `crtsh-rescan.txt` next to the store, and a reminder with a ready-to-use re-run command is printed at the end of `enum` and `pipeline`. Automatic re-scanning not yet implemented.
 
-5. **`rp add` — manual host injection** — Define a flow for adding one or more hosts directly to the store for processing by downstream modules without running enum. Works in tandem with the crt.sh retry and SAN rescan workflows: after initial scanning completes, a user can send hosts through one or more pipeline phases. Useful for subdomains discovered out-of-band, SAN-discovered hosts, or manual additions. Should accept a file or inline list of FQDNs and create store records with `discovery_sources: ["manual"]`.
+5. ~~**`rp add` — manual host injection**~~ — Done. `rp add -o store.jsonl` accepts FQDNs via `-i <file>` and/or positional args. Creates store records with `discovery_sources: ["manual"]` (customizable via `--source`). Merges with existing records. No network calls — designed to work with `sans-rescan.txt` and `crtsh-rescan.txt` for adding hosts discovered out-of-band.
 
 6. **SAN-discovered host rescan** — When `analyze` flags `sans_new_subdomains`, save those FQDNs to a `sans-rescan.txt` file for potential re-scanning and addition to the store. Should integrate with `rp add` and the crt.sh retry flow so newly discovered domains/subdomains are added to the store and processed through all modules.
 

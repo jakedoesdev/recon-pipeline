@@ -52,6 +52,41 @@ def report(input_path, view, scope, flagged_only, output, fmt):
 
 
 @cli.command()
+@click.option("-o", "--output", "output_path", required=True, help="JSONL store path")
+@click.option("-i", "--input", "input_path", default=None, help="File of FQDNs to add (one per line)")
+@click.option("--source", default="manual", help="Discovery source tag (default: manual)")
+@click.argument("fqdns", nargs=-1)
+def add(output_path, input_path, source, fqdns):
+    """Add hosts to the store without running enumeration."""
+    all_fqdns: list[str] = []
+
+    if input_path:
+        all_fqdns.extend(_read_domains(input_path))
+
+    for fqdn in fqdns:
+        cleaned = fqdn.strip().lower().rstrip(".")
+        if cleaned and not cleaned.startswith("#"):
+            all_fqdns.append(cleaned)
+
+    if not all_fqdns:
+        click.echo("No FQDNs provided. Use -i <file> and/or pass FQDNs as arguments.", err=True)
+        raise SystemExit(1)
+
+    seen: set[str] = set()
+    hosts: list[Host] = []
+    for fqdn in all_fqdns:
+        if fqdn in seen:
+            continue
+        seen.add(fqdn)
+        ext = tldextract.extract(fqdn)
+        apex = f"{ext.domain}.{ext.suffix}"
+        hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=[source]))
+
+    store = upsert_hosts(Path(output_path), hosts)
+    click.echo(f"Added {len(hosts)} host(s) (store: {len(store)} total) to {output_path}", err=True)
+
+
+@cli.command()
 @click.option("-i", "--input", "input_path", required=True, help="File of root domains")
 @click.option("--bbot/--no-bbot", default=True)
 @click.option("--bbot-preset", default="reconpipe-quiet")
