@@ -456,7 +456,7 @@ _FLAG_SEVERITY: dict[str, str] = {
     "stale_cname": "high",
     "mx_dangling": "high",
     "domain_expiring_soon": "high",
-    "spf_permissive": "high",
+    "spf_permissive": "critical",
     "private_ip_external": "high",
     "private_ip_leaked": "high",
     "geo_mismatch": "medium",
