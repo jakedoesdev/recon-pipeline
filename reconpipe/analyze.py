@@ -462,7 +462,7 @@ _FLAG_SEVERITY: dict[str, str] = {
     "geo_mismatch": "medium",
     "multiple_apex_owners": "medium",
     "unexpected_asn": "medium",
-    "cert_expired": "critical",
+    "cert_expired": "high",
     "cert_expiring_soon": "high",
     "cert_self_signed": "medium",
     "cors_wildcard_credentials": "medium",
