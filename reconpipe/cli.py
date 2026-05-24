@@ -30,18 +30,20 @@ def cli(verbose, quiet, log_file):
 @click.option("--view", type=click.Choice(["subs", "ips", "subs-ips", "private", "headers", "combined"]), default="combined")
 @click.option("--scope", default="in", help="Scope bucket(s): in, unmatched, out, all (comma-separated)")
 @click.option("--flagged-only", is_flag=True, default=False)
+@click.option("--no-ipv6", is_flag=True, default=False, help="Exclude IPv6 addresses (applies to ips and subs-ips views)")
+@click.option("--no-ipv4", is_flag=True, default=False, help="Exclude IPv4 addresses (applies to ips and subs-ips views)")
 @click.option("-o", "--output", default=None, help="Output file (default: stdout)")
 @click.option("--format", "fmt", default=None, help="Output format override")
-def report(input_path, view, scope, flagged_only, output, fmt):
+def report(input_path, view, scope, flagged_only, no_ipv6, no_ipv4, output, fmt):
     """Generate output views from the JSONL store."""
     scope_list = [s.strip() for s in scope.split(",")]
 
     if view == "subs":
         report_subs(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "ips":
-        report_ips(input_path, scope_list, output, flagged_only=flagged_only)
+        report_ips(input_path, scope_list, output, flagged_only=flagged_only, no_ipv6=no_ipv6, no_ipv4=no_ipv4)
     elif view == "subs-ips":
-        report_subs_ips(input_path, scope_list, output, flagged_only=flagged_only)
+        report_subs_ips(input_path, scope_list, output, flagged_only=flagged_only, no_ipv6=no_ipv6, no_ipv4=no_ipv4)
     elif view == "private":
         report_private(input_path, scope_list, output, flagged_only=flagged_only)
     elif view == "headers":

@@ -43,6 +43,8 @@ def report_ips(store_path: Path | str, scope: list[str], output: str | None, **k
     hosts = load_store(Path(store_path))
     include_private = kwargs.get("include_private", False)
     flagged_only = kwargs.get("flagged_only", False)
+    no_ipv6 = kwargs.get("no_ipv6", False)
+    no_ipv4 = kwargs.get("no_ipv4", False)
     ips: set[str] = set()
     for host in hosts.values():
         if not _scope_matches(host, scope):
@@ -54,6 +56,10 @@ def report_ips(store_path: Path | str, scope: list[str], output: str | None, **k
         for rip in host.dns.resolved_ips:
             if rip.is_private and not include_private:
                 continue
+            if no_ipv6 and ":" in rip.ip:
+                continue
+            if no_ipv4 and ":" not in rip.ip:
+                continue
             ips.add(rip.ip)
 
     _write_output("\n".join(sorted(ips, key=ip_sort_key)), output)
@@ -62,9 +68,11 @@ def report_ips(store_path: Path | str, scope: list[str], output: str | None, **k
 def report_subs_ips(store_path: Path | str, scope: list[str], output: str | None, **kwargs) -> None:
     hosts = load_store(Path(store_path))
     flagged_only = kwargs.get("flagged_only", False)
+    no_ipv6 = kwargs.get("no_ipv6", False)
+    no_ipv4 = kwargs.get("no_ipv4", False)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["fqdn", "ip", "record_type"])
+    writer.writerow(["fqdn", "ip"])
     for host in sorted(hosts.values(), key=lambda h: h.fqdn):
         if not _scope_matches(host, scope):
             continue
@@ -75,7 +83,11 @@ def report_subs_ips(store_path: Path | str, scope: list[str], output: str | None
         for rip in host.dns.resolved_ips:
             if rip.is_private:
                 continue
-            writer.writerow([host.fqdn, rip.ip, rip.record_type])
+            if no_ipv6 and ":" in rip.ip:
+                continue
+            if no_ipv4 and ":" not in rip.ip:
+                continue
+            writer.writerow([host.fqdn, rip.ip])
 
     _write_output(buf.getvalue(), output)
 
