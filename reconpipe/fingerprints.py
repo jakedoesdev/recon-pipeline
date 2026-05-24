@@ -11,6 +11,8 @@ class TakeoverFingerprint:
     cname_patterns: list[str]
     body_patterns: list[str]
     nxdomain_vulnerable: bool = False
+    negative_body_patterns: list[str] | None = None
+    negative_status_codes: list[int] | None = None
 
 
 BUILTIN_FINGERPRINTS: list[TakeoverFingerprint] = [
@@ -104,5 +106,7 @@ BUILTIN_FINGERPRINTS: list[TakeoverFingerprint] = [
         service="cloudfront",
         cname_patterns=[".cloudfront.net"],
         body_patterns=["Bad request", "ERROR: The request could not be satisfied"],
+        negative_body_patterns=["Request blocked"],
+        negative_status_codes=[403],
     ),
 ]

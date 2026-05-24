@@ -92,9 +92,15 @@ async def _batch_stale_cname_checks(
     return stale
 
 
-def _check_body_patterns(body: str, fp: TakeoverFingerprint) -> bool:
+def _check_body_patterns(body: str, fp: TakeoverFingerprint, status_code: int | None = None) -> bool:
     body_lower = body.lower()
-    return any(pattern.lower() in body_lower for pattern in fp.body_patterns)
+    if not any(pattern.lower() in body_lower for pattern in fp.body_patterns):
+        return False
+    if fp.negative_body_patterns and any(p.lower() in body_lower for p in fp.negative_body_patterns):
+        return False
+    if fp.negative_status_codes and status_code in fp.negative_status_codes:
+        return False
+    return True
 
 
 def _match_takeover_cname(
@@ -118,7 +124,7 @@ def _match_takeover_cname(
         if fp.nxdomain_vulnerable and not host.dns.resolved_ips and not host.dns.resolution_error:
             return fp.service, []
         if host.headers and host.headers.body_snippet:
-            if _check_body_patterns(host.headers.body_snippet, fp):
+            if _check_body_patterns(host.headers.body_snippet, fp, host.headers.status_code):
                 return fp.service, []
         else:
             needs_fetch.append(fp)
@@ -133,12 +139,11 @@ async def _fetch_confirms_takeover_async(
         try:
             resp = await client.get(f"{scheme}://{fqdn}")
             body = resp.text[:5000]
-            for pattern in fp.body_patterns:
-                if pattern.lower() in body.lower():
-                    provenance(module="analyze", action="takeover_http_confirmed",
-                               fqdn=fqdn, service=fp.service, scheme=scheme,
-                               status=resp.status_code, body_pattern=pattern)
-                    return True
+            if _check_body_patterns(body, fp, resp.status_code):
+                provenance(module="analyze", action="takeover_http_confirmed",
+                           fqdn=fqdn, service=fp.service, scheme=scheme,
+                           status=resp.status_code)
+                return True
         except Exception:
             continue
     return False
