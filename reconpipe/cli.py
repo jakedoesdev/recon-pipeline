@@ -385,9 +385,67 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
     close_provenance()
 
 
+ALL_PHASES = ["enum", "resolve", "reverse", "headers", "tls", "rdap", "wpscan"]
+
+PHASE_ALIASES = {
+    "e": "enum",
+    "res": "resolve",
+    "rev": "reverse",
+    "h": "headers",
+    "t": "tls",
+    "r": "rdap",
+    "w": "wpscan",
+}
+
+
+def _parse_phases(raw: str | None) -> list[str]:
+    """Parse --phases string into an ordered list of canonical phase names."""
+    if raw is None:
+        return list(ALL_PHASES)
+
+    selected: list[str] = []
+    for token in raw.split(","):
+        token = token.strip().lower()
+        if not token:
+            continue
+        canonical = PHASE_ALIASES.get(token, token)
+        if canonical not in ALL_PHASES:
+            valid = ", ".join(
+                f"{name} ({alias})" for alias, name in PHASE_ALIASES.items()
+            )
+            raise click.BadParameter(
+                f"Unknown phase '{token}'. Valid phases: {valid}",
+                param_hint="'--phases'",
+            )
+        if canonical not in selected:
+            selected.append(canonical)
+
+    if not selected:
+        raise click.BadParameter(
+            "No phases selected. Omit --phases to run all.",
+            param_hint="'--phases'",
+        )
+
+    return [p for p in ALL_PHASES if p in selected]
+
+
+def _has_unscoped_hosts(store_path: Path) -> bool:
+    """Check if the store has any FQDNs without scope status."""
+    from .store import load_store
+
+    if not store_path.exists():
+        return False
+    hosts = load_store(store_path)
+    return any(h.scope is None for h in hosts.values())
+
+
 @cli.command()
 @click.option("-i", "--input", "input_path", required=True, help="File of root domains")
 @click.option("-o", "--output", "output_path", required=True, help="JSONL store path")
+@click.option("--phases", "phases_raw", default=None,
+              help="Comma-separated phases to run: enum (e), resolve (res), reverse (rev), "
+                   "headers (h), tls (t), rdap (r), wpscan (w). Default: all. "
+                   "scope and analyze run automatically.")
 @click.option("--bbot/--no-bbot", default=True)
 @click.option("--bbot-preset", default="reconpipe-quiet")
 @click.option("--bbot-silent", is_flag=True, default=False)
@@ -399,16 +457,19 @@ def analyze(input_path, expected_country, takeover_fingerprints, enrich_online):
 @click.option("--deny", default=None, help="Deny-list file for scope")
 @click.option("--auto-scope", is_flag=True, default=False, help="Auto-generate allow.txt from targets without prompting")
 @click.option("--expected-country", default=None)
-@click.option("--rdap/--no-rdap", default=True)
-@click.option("--wpscan/--no-wpscan", "run_wpscan_flag", default=True)
 @click.option("--enrich-online/--no-enrich-online", default=False)
 @click.option("--refresh", is_flag=True, default=False, help="Re-check hosts that already have data from prior runs")
 def pipeline(
-    input_path, output_path, bbot, bbot_preset, bbot_silent, crtsh,
+    input_path, output_path, phases_raw, bbot, bbot_preset, bbot_silent, crtsh,
     resolvers, concurrency, scheme, allow, deny, auto_scope,
-    rdap, run_wpscan_flag, expected_country, enrich_online, refresh,
+    expected_country, enrich_online, refresh,
 ):
-    """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → wpscan → analyze."""
+    """Run full pipeline: enum → scope → resolve → reverse → headers → tls → rdap → wpscan → analyze.
+
+    Use --phases to select which phases to run (e.g. --phases enum,resolve,headers
+    or --phases e,res,h). Scope runs automatically for unscoped hosts, and analyze
+    always runs after data-gathering phases complete.
+    """
     from .analyze import run_analyze
     from .headers import run_headers
     from .rdap import run_rdap
@@ -417,6 +478,10 @@ def pipeline(
     from .scope import run_scope
     from .tls import run_tls
     from .wpscan import run_wpscan
+
+    phases = _parse_phases(phases_raw)
+    run_enum = "enum" in phases
+    data_phases = [p for p in phases if p != "enum"]
 
     # Validate targets and scope files before any work
     domains = _read_domains(input_path)
@@ -429,97 +494,116 @@ def pipeline(
     store = Path(output_path)
     init_provenance(store)
 
-    # 1. Enum
-    click.echo("━━━ Phase: enum ━━━", err=True)
+    phase_label = ", ".join(phases)
+    click.echo(f"━━━ Pipeline phases: {phase_label} (+ auto scope & analyze) ━━━", err=True)
 
-    all_hosts: list[Host] = []
     crtsh_failures: list[str] = []
-    if crtsh:
-        for domain in domains:
+    ran_any_data_phase = False
+
+    # 1. Enum (if selected)
+    if run_enum:
+        click.echo("━━━ Phase: enum ━━━", err=True)
+
+        all_hosts: list[Host] = []
+        if crtsh:
+            for domain in domains:
+                try:
+                    subs = query_crtsh(domain)
+                    click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
+                    for fqdn in subs:
+                        ext = tldextract.extract(fqdn)
+                        apex = f"{ext.domain}.{ext.suffix}"
+                        all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
+                except CrtshError:
+                    click.echo(f"[crtsh] {domain}: FAILED — queued for rescan", err=True)
+                    crtsh_failures.append(domain)
+
+        if bbot:
             try:
-                subs = query_crtsh(domain)
-                click.echo(f"[crtsh] {domain}: {len(subs)} subdomains", err=True)
-                for fqdn in subs:
+                bbot_results = run_bbot(domains, preset=bbot_preset, silent=bbot_silent, store_path=store)
+                click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
+                for fqdn, source in bbot_results:
                     ext = tldextract.extract(fqdn)
                     apex = f"{ext.domain}.{ext.suffix}"
-                    all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=["crtsh"]))
-            except CrtshError:
-                click.echo(f"[crtsh] {domain}: FAILED — queued for rescan", err=True)
-                crtsh_failures.append(domain)
+                    all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=[source]))
+            except BbotError as e:
+                click.echo(f"[bbot] error: {e}", err=True)
 
-    if bbot:
-        try:
-            bbot_results = run_bbot(domains, preset=bbot_preset, silent=bbot_silent, store_path=store)
-            click.echo(f"[bbot:{bbot_preset}] {len(bbot_results)} subdomains", err=True)
-            for fqdn, source in bbot_results:
-                ext = tldextract.extract(fqdn)
-                apex = f"{ext.domain}.{ext.suffix}"
-                all_hosts.append(Host(fqdn=fqdn, apex=apex, discovery_sources=[source]))
-        except BbotError as e:
-            click.echo(f"[bbot] error: {e}", err=True)
+        if all_hosts:
+            result = upsert_hosts(store, all_hosts)
+            click.echo(f"Store: {len(result)} total hosts", err=True)
+            ran_any_data_phase = True
+        else:
+            click.echo("No subdomains discovered.", err=True)
+            if not data_phases:
+                raise SystemExit(1)
 
-    if all_hosts:
-        result = upsert_hosts(store, all_hosts)
-        click.echo(f"Store: {len(result)} total hosts", err=True)
-    else:
-        click.echo("No subdomains discovered.", err=True)
-        raise SystemExit(1)
-
-    # 2. Scope (run early so downstream phases skip denied hosts)
+    # 2. Scope — auto-runs after enum, or when unscoped FQDNs exist in the store
     if allow:
-        click.echo("━━━ Phase: scope ━━━", err=True)
-        run_scope(store_path=store, allow_path=allow, deny_path=deny)
+        needs_scope = run_enum or _has_unscoped_hosts(store)
+        if needs_scope:
+            click.echo("━━━ Phase: scope (auto) ━━━", err=True)
+            run_scope(store_path=store, allow_path=allow, deny_path=deny)
     else:
-        click.echo("━━━ Phase: scope (skipped — user declined) ━━━", err=True)
+        if run_enum:
+            click.echo("━━━ Phase: scope (skipped — user declined) ━━━", err=True)
+
+    resolver_list = [r.strip() for r in resolvers.split(",")]
 
     # 3. Resolve
-    click.echo("━━━ Phase: resolve ━━━", err=True)
-    resolver_list = [r.strip() for r in resolvers.split(",")]
-    run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+    if "resolve" in phases:
+        click.echo("━━━ Phase: resolve ━━━", err=True)
+        run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+        ran_any_data_phase = True
 
     # 4. Reverse DNS
-    click.echo("━━━ Phase: reverse ━━━", err=True)
-    run_reverse(store_path=store, resolvers=resolver_list, concurrency=concurrency, refresh=refresh)
+    if "reverse" in phases:
+        click.echo("━━━ Phase: reverse ━━━", err=True)
+        run_reverse(store_path=store, resolvers=resolver_list, concurrency=concurrency, refresh=refresh)
+        ran_any_data_phase = True
 
     # 5. Headers
-    click.echo("━━━ Phase: headers ━━━", err=True)
-    run_headers(store_path=store, scheme=scheme, refresh=refresh, concurrency=min(concurrency, 20))
+    if "headers" in phases:
+        click.echo("━━━ Phase: headers ━━━", err=True)
+        run_headers(store_path=store, scheme=scheme, refresh=refresh, concurrency=min(concurrency, 20))
+        ran_any_data_phase = True
 
     # 6. TLS
-    click.echo("━━━ Phase: tls ━━━", err=True)
-    run_tls(store_path=store, refresh=refresh, concurrency=min(concurrency, 30))
+    if "tls" in phases:
+        click.echo("━━━ Phase: tls ━━━", err=True)
+        run_tls(store_path=store, refresh=refresh, concurrency=min(concurrency, 30))
+        ran_any_data_phase = True
 
     # 7. RDAP
-    if rdap:
+    if "rdap" in phases:
         click.echo("━━━ Phase: rdap ━━━", err=True)
         run_rdap(store_path=store, refresh=refresh)
-    else:
-        click.echo("━━━ Phase: rdap (skipped) ━━━", err=True)
+        ran_any_data_phase = True
 
     # 8. WPScan
-    if run_wpscan_flag:
+    if "wpscan" in phases:
         click.echo("━━━ Phase: wpscan ━━━", err=True)
         run_wpscan(store_path=store, refresh=refresh)
-    else:
-        click.echo("━━━ Phase: wpscan (skipped) ━━━", err=True)
+        ran_any_data_phase = True
 
-    # 9. Analyze
-    click.echo("━━━ Phase: analyze ━━━", err=True)
-    san_new = run_analyze(
-        store_path=store,
-        expected_country=expected_country,
-        enrich_online=enrich_online,
-    )
+    # 9. Analyze — always runs if any data-gathering phase ran
+    if ran_any_data_phase:
+        click.echo("━━━ Phase: analyze (auto) ━━━", err=True)
+        san_new = run_analyze(
+            store_path=store,
+            expected_country=expected_country,
+            enrich_online=enrich_online,
+        )
 
-    sans_rescan_path = _write_sans_rescan(store, san_new)
-    rescan_path = _write_crtsh_rescan(store, crtsh_failures)
-    if rescan_path or sans_rescan_path:
-        click.echo("", err=True)
-    if rescan_path:
-        click.echo(f"⚠ {len(crtsh_failures)} domain(s) failed crt.sh — saved to {rescan_path}", err=True)
-        click.echo(f"  Re-run with: rp enum -i {rescan_path} -o {output_path} --no-bbot", err=True)
-    if sans_rescan_path:
-        click.echo(f"⚠ {len(san_new)} SAN-discovered FQDN(s) not in store — saved to {sans_rescan_path}", err=True)
+        sans_rescan_path = _write_sans_rescan(store, san_new)
+        rescan_path = _write_crtsh_rescan(store, crtsh_failures)
+        if rescan_path or sans_rescan_path:
+            click.echo("", err=True)
+        if rescan_path:
+            click.echo(f"⚠ {len(crtsh_failures)} domain(s) failed crt.sh — saved to {rescan_path}", err=True)
+            click.echo(f"  Re-run with: rp enum -i {rescan_path} -o {output_path} --no-bbot", err=True)
+        if sans_rescan_path:
+            click.echo(f"⚠ {len(san_new)} SAN-discovered FQDN(s) not in store — saved to {sans_rescan_path}", err=True)
 
     click.echo(f"━━━ Pipeline complete: {store} ━━━", err=True)
     close_provenance()

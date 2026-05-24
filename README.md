@@ -134,6 +134,31 @@ Runs all phases in sequence: enum → scope → resolve → reverse → headers 
 
 Scope files are validated before any work begins (see enum section above). At the end of the pipeline, any crt.sh failures or SAN-discovered hosts are saved to rescan files with suggested re-run commands.
 
+#### Selective phases
+
+Use `--phases` to run only specific phases. Scope and analyze are automatic — scope runs whenever unscoped FQDNs exist in the store, and analyze runs after any data-gathering phase completes.
+
+```bash
+rp pipeline -i domains.txt -o store.jsonl --phases enum,resolve,headers
+rp pipeline -i domains.txt -o store.jsonl --phases e,res,h          # shorthand
+rp pipeline -i domains.txt -o store.jsonl --phases wpscan            # just wpscan
+rp pipeline -i domains.txt -o store.jsonl --phases rev,h,t           # reverse + headers + tls
+```
+
+Phase names and shorthand aliases:
+
+| Short | Full |
+|-------|------|
+| `e` | `enum` |
+| `res` | `resolve` |
+| `rev` | `reverse` |
+| `h` | `headers` |
+| `t` | `tls` |
+| `r` | `rdap` |
+| `w` | `wpscan` |
+
+Omit `--phases` to run all phases (default behavior).
+
 #### 1. Subdomain enumeration
 
 ```bash
@@ -274,7 +299,7 @@ rp rdap -i store.jsonl
 rp rdap -i store.jsonl --refresh                        # re-check all apex domains
 ```
 
-Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skips apex domains that already have RDAP data from prior runs; use `--refresh` to re-check all. Skip entirely with `rp pipeline --no-rdap`.
+Queries RDAP (the modern WHOIS replacement) once per apex domain. Collects registrar, registration/expiration dates, domain status codes, registered nameservers, and DNSSEC status. Data is shared across all subdomains of the same apex. Skips apex domains that already have RDAP data from prior runs; use `--refresh` to re-check all. To skip in the pipeline, omit `rdap` from `--phases`.
 
 #### 9. WPScan
 
@@ -286,7 +311,7 @@ rp wpscan -i store.jsonl --refresh                       # re-scan all WordPress
 
 Scans WordPress hosts detected by `rp headers` (via technology fingerprinting — no path fuzzing or endpoint probing for identification). Requires `wpscan` on PATH (pre-installed on Kali, or `apt install wpscan`). Runs without an API token but warns that vulnerability data will not be available; add a `wpscan` key to `keys.toml` for full CVE lookups.
 
-Captures: WordPress version and update status, active theme and version, all detected plugins and versions, known vulnerabilities/CVEs (with API token), and interesting findings (exposed endpoints, misconfigurations like XML-RPC, debug.log, directory listing). Raw WPScan JSON output is saved to `wpscan_out/` next to the store for manual review. Skips hosts that already have WPScan data from prior runs; use `--refresh` to re-scan all. Skip entirely with `rp pipeline --no-wpscan`.
+Captures: WordPress version and update status, active theme and version, all detected plugins and versions, known vulnerabilities/CVEs (with API token), and interesting findings (exposed endpoints, misconfigurations like XML-RPC, debug.log, directory listing). Raw WPScan JSON output is saved to `wpscan_out/` next to the store for manual review. Skips hosts that already have WPScan data from prior runs; use `--refresh` to re-scan all. To skip in the pipeline, omit `wpscan` from `--phases`.
 
 #### 10. Analyze
 
