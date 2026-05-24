@@ -13,7 +13,7 @@ import dns.resolver
 import httpx
 
 from .config import get_key
-from .fingerprints import BUILTIN_FINGERPRINTS, TakeoverFingerprint
+from .fingerprints import BUILTIN_FINGERPRINTS, INFRA_FINGERPRINTS, InfraFingerprint, TakeoverFingerprint
 from .log import provenance
 from .models import AnalysisInfo, Host, ResolvedIp
 from .store import is_out_of_scope, load_store, save_store
@@ -477,6 +477,7 @@ _FLAG_SEVERITY: dict[str, str] = {
     "wildcard_dns": "low",
     "sans_new_subdomains": "low",
     "lower_env_exposed": "medium",
+    "infra_login_exposed": "high",
     "wp_vulns": "high",
     "wp_outdated": "medium",
     "wp_theme_outdated": "low",
@@ -637,6 +638,26 @@ def _check_lower_env(host: Host) -> bool:
     return False
 
 
+def _check_infra_exposed(host: Host) -> str | None:
+    """Returns 'category:device' if the host matches an infra fingerprint, else None."""
+    if not host.headers:
+        return None
+
+    title = (host.headers.page_title or "").lower()
+    body = (host.headers.body_snippet or "").lower()
+    server = (host.headers.present.get("server", "") if host.headers.present else "").lower()
+
+    for fp in INFRA_FINGERPRINTS:
+        if fp.title_patterns and any(p.lower() in title for p in fp.title_patterns):
+            return f"{fp.category}:{fp.device}"
+        if fp.body_patterns and any(p.lower() in body for p in fp.body_patterns):
+            return f"{fp.category}:{fp.device}"
+        if fp.server_patterns and any(p.lower() in server for p in fp.server_patterns):
+            return f"{fp.category}:{fp.device}"
+
+    return None
+
+
 def _check_sans_new_subdomains(host: Host, all_fqdns: set[str]) -> set[str]:
     """Returns set of SAN FQDNs not present in the store."""
     new: set[str] = set()
@@ -750,6 +771,7 @@ def run_analyze(
     cors_count = 0
     cookie_count = 0
     lower_env_count = 0
+    infra_count = 0
     wpscan_count = 0
 
     for host in in_scope_hosts.values():
@@ -863,6 +885,12 @@ def run_analyze(
             existing_flags.add("lower_env_exposed")
             lower_env_count += 1
 
+        # Infrastructure / OT / ICS login page exposed
+        infra_match = _check_infra_exposed(host)
+        if infra_match:
+            existing_flags.add(f"infra_login_exposed:{infra_match}")
+            infra_count += 1
+
         # WPScan findings
         for wf in _check_wpscan(host):
             existing_flags.add(wf)
@@ -882,11 +910,11 @@ def run_analyze(
     logger.info(
         "Analysis complete: %d takeover, %d stale CNAMEs, %d geo, %d private IPs, "
         "%d leaked IPs, %d SPF, %d NS takeover, %d MX dangling, %d RDAP, %d TLS, "
-        "%d CORS, %d cookie, %d status, %d version, %d lower env, %d WPScan, %d total flagged",
+        "%d CORS, %d cookie, %d status, %d version, %d lower env, %d infra, %d WPScan, %d total flagged",
         takeover_count, stale_count, geo_count, private_count,
         leaked_count, spf_count, ns_takeover_count, mx_dangling_count, rdap_count,
         tls_count, cors_count, cookie_count,
-        status_count, version_count, lower_env_count, wpscan_count, flagged_total,
+        status_count, version_count, lower_env_count, infra_count, wpscan_count, flagged_total,
     )
 
     if all_san_new_fqdns:
