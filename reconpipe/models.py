@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+
+def ip_sort_key(ip_str: str) -> tuple:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return (addr.version, addr.packed)
+    except ValueError:
+        return (99, ip_str.encode())
 
 
 @dataclass
