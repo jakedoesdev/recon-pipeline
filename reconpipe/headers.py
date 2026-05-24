@@ -355,6 +355,16 @@ async def _check_all(
             pending.add(task)
 
         while pending:
+            if interrupted:
+                for task in pending:
+                    task.cancel()
+                remaining = await asyncio.gather(*pending, return_exceptions=True)
+                for result in remaining:
+                    if isinstance(result, Host):
+                        hosts[result.fqdn] = result
+                        checked += 1
+                break
+
             done, pending = await asyncio.wait(
                 pending, return_when=asyncio.FIRST_COMPLETED,
             )

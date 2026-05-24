@@ -79,6 +79,18 @@ async def _reverse_all(
 
     checked = 0
     while pending:
+        if interrupted:
+            for task in pending:
+                task.cancel()
+            remaining = await asyncio.gather(*pending, return_exceptions=True)
+            for result in remaining:
+                if isinstance(result, tuple):
+                    ip, hostname = result
+                    if hostname:
+                        results[ip] = hostname
+                    checked += 1
+            break
+
         done, pending = await asyncio.wait(
             pending, return_when=asyncio.FIRST_COMPLETED,
         )

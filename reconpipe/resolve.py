@@ -206,7 +206,8 @@ async def _detect_wildcards(
 
 
 async def _resolve_all(
-    hosts: dict[str, Host],
+    hosts_to_resolve: dict[str, Host],
+    all_hosts: dict[str, Host],
     store_path: Path,
     resolvers: list[str],
     concurrency: int,
@@ -248,23 +249,20 @@ async def _resolve_all(
         except Exception as e:
             logger.warning("Failed to load country DB: %s", e)
 
-    # Wildcard detection
     wildcard_map: dict[str, set[str]] = {}
     if wildcard_detect:
-        apexes = {h.apex for h in hosts.values()}
+        apexes = {h.apex for h in hosts_to_resolve.values()}
         wildcard_map = await _detect_wildcards(resolver, apexes)
 
-    # Resolve all hosts with concurrency limit (skip denied hosts)
     sem = asyncio.Semaphore(concurrency)
-    in_scope_hosts = [h for h in hosts.values() if not is_out_of_scope(h)]
-    total = len(in_scope_hosts)
+    total = len(hosts_to_resolve)
 
     async def resolve_with_sem(host: Host) -> Host:
         async with sem:
             return await _resolve_host(resolver, host, resolver_str, asn_lookup, country_lookup)
 
     pending: set[asyncio.Task] = set()
-    for host in in_scope_hosts:
+    for host in hosts_to_resolve.values():
         if interrupted:
             break
         task = asyncio.create_task(resolve_with_sem(host))
@@ -272,6 +270,16 @@ async def _resolve_all(
 
     checked = 0
     while pending:
+        if interrupted:
+            for task in pending:
+                task.cancel()
+            remaining = await asyncio.gather(*pending, return_exceptions=True)
+            for result in remaining:
+                if isinstance(result, Host):
+                    all_hosts[result.fqdn] = result
+                    checked += 1
+            break
+
         done, pending = await asyncio.wait(
             pending, return_when=asyncio.FIRST_COMPLETED,
         )
@@ -288,13 +296,13 @@ async def _resolve_all(
                             host.analysis = AnalysisInfo()
                         if "wildcard_dns" not in host.analysis.flags:
                             host.analysis.flags.append("wildcard_dns")
-                hosts[host.fqdn] = host
+                all_hosts[host.fqdn] = host
             except Exception as e:
                 logger.warning("Resolution error: %s", e)
             checked += 1
             if checked % FLUSH_INTERVAL == 0:
                 logger.info("Progress: %d/%d resolved", checked, total)
-                save_store(store_path, hosts)
+                save_store(store_path, all_hosts)
 
     signal.signal(signal.SIGINT, prev_handler)
 
@@ -304,7 +312,7 @@ async def _resolve_all(
     if country_lookup:
         country_lookup.close()
 
-    return hosts, interrupted
+    return all_hosts, interrupted
 
 
 def run_resolve(
@@ -314,19 +322,35 @@ def run_resolve(
     wildcard_detect: bool = True,
     asn_db: str | None = None,
     country_db: str | None = None,
+    refresh: bool = False,
 ) -> None:
     hosts = load_store(store_path)
     if not hosts:
         logger.warning("No hosts in store to resolve")
         return
 
-    in_scope_count = sum(1 for h in hosts.values() if not is_out_of_scope(h))
-    skipped = len(hosts) - in_scope_count
+    already_resolved = 0
+    to_resolve: dict[str, Host] = {}
+    for fqdn, host in hosts.items():
+        if is_out_of_scope(host):
+            continue
+        if not refresh and host.dns is not None:
+            already_resolved += 1
+        else:
+            to_resolve[fqdn] = host
+
+    out_of_scope = sum(1 for h in hosts.values() if is_out_of_scope(h))
+    if already_resolved:
+        logger.info("Skipping %d hosts with existing DNS data (use --refresh to re-resolve)", already_resolved)
+    if not to_resolve:
+        logger.warning("No hosts to resolve (all %d in-scope hosts already have DNS data)", already_resolved)
+        return
     logger.info("Resolving %d hosts, %d skipped as out-of-scope (concurrency=%d, resolvers=%s)",
-                in_scope_count, skipped, concurrency, resolvers)
+                len(to_resolve), out_of_scope, concurrency, resolvers)
 
     hosts, interrupted = asyncio.run(_resolve_all(
-        hosts=hosts,
+        hosts_to_resolve=to_resolve,
+        all_hosts=hosts,
         store_path=store_path,
         resolvers=resolvers,
         concurrency=concurrency,

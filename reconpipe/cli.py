@@ -260,7 +260,8 @@ def _write_sans_rescan(store_path: Path, fqdns: set[str]) -> Path | None:
 @click.option("--country-db", default=None)
 @click.option("--wildcard-detect/--no-wildcard-detect", default=True)
 @click.option("--concurrency", default=50, type=int)
-def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurrency):
+@click.option("--refresh", is_flag=True, default=False, help="Re-resolve all hosts, even those with existing DNS data")
+def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurrency, refresh):
     """DNS resolution with private-IP detection."""
     from .resolve import run_resolve
 
@@ -273,6 +274,7 @@ def resolve(input_path, resolvers, asn_db, country_db, wildcard_detect, concurre
         wildcard_detect=wildcard_detect,
         asn_db=asn_db,
         country_db=country_db,
+        refresh=refresh,
     )
     close_provenance()
 
@@ -561,7 +563,7 @@ def pipeline(
     # 3. Resolve
     if "resolve" in phases:
         click.echo("━━━ Phase: resolve ━━━", err=True)
-        run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency)
+        run_resolve(store_path=store, resolvers=resolver_list, concurrency=concurrency, refresh=refresh)
         ran_any_data_phase = True
 
     # 4. Reverse DNS

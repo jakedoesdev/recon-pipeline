@@ -252,10 +252,11 @@ rp resolve -i store.jsonl
 rp resolve -i store.jsonl --resolvers 1.1.1.1,8.8.8.8   # custom resolvers
 rp resolve -i store.jsonl --concurrency 100              # parallel lookups
 rp resolve -i store.jsonl --no-wildcard-detect           # skip wildcard check
+rp resolve -i store.jsonl --refresh                      # re-resolve all hosts
 rp resolve -i store.jsonl --asn-db GeoLite2-ASN.mmdb --country-db GeoLite2-Country.mmdb
 ```
 
-Resolves A, AAAA, and CNAME records. Walks CNAME chains (up to 10 hops). Detects wildcard DNS by querying 3 random labels per apex. Flags private IPs (RFC 1918, loopback, link-local).
+Resolves A, AAAA, and CNAME records. Walks CNAME chains (up to 10 hops). Detects wildcard DNS by querying 3 random labels per apex. Flags private IPs (RFC 1918, loopback, link-local). Skips hosts that already have DNS data from prior runs; use `--refresh` to re-resolve all.
 
 #### 5. Reverse DNS
 
