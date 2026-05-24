@@ -206,6 +206,14 @@ def _ensure_scope_files(
             deny_path = str(ensure_deny_file(targets_dir))
         return allow_path, deny_path
 
+    existing_allow = targets_dir / "allow.txt"
+    existing_deny = targets_dir / "deny.txt"
+    if not auto_scope and _has_entries(str(existing_allow)):
+        click.echo(f"\nFound existing scope file: {existing_allow}", err=True)
+        if click.confirm("Use this allow.txt?", default=True, err=True):
+            deny = str(existing_deny) if existing_deny.exists() else str(ensure_deny_file(targets_dir))
+            return str(existing_allow), deny
+
     entries = _preview_allow_entries(domains)
 
     if auto_scope:
